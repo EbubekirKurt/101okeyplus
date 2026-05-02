@@ -1,17 +1,55 @@
 import { Tile } from '../../types/tile';
 
+/** createDeck ile aynı: numaralı taş id = renk harfi + sayı + kopya (0|1). */
+function numberedCanonicalId(color: string, number: number, copy: 0 | 1): string {
+  return `${color[0].toUpperCase()}-${number}-${copy}`;
+}
+
 /**
- * Canonical id format (must match createDeck). Repairs Firestore drift where
- * `id` does not match `color`/`number`/`copy`, which would duplicate ids for
- * the two physical okey tiles and couple flip / drag behaviour.
+ * Firestore’dan gelen elde `id` / `copy` kayması veya aynı yüzden iki taşın
+ * yanlışlıkla aynı `id` ile gelmesi drag / ıstaka senkronunda taş kaybına yol açar.
+ * Her fiziksel taşın benzersiz `id`’si olmalı (ör. iki siyah 3 → B-3-0 ve B-3-1).
  */
 export function repairHandTileIds(tiles: Tile[]): Tile[] {
-  return tiles.map((t) => {
+  const pass1 = tiles.map((t): Tile => {
     if (t.kind === 'fake-joker') {
-      const id = `FJ-${t.copy}`;
-      return t.id === id ? t : { ...t, id };
+      const copy: 0 | 1 = t.copy === 1 ? 1 : 0;
+      const id = `FJ-${copy}`;
+      return t.id === id && t.copy === copy ? t : { ...t, id, copy };
     }
-    const id = `${t.color[0].toUpperCase()}-${t.number}-${t.copy}`;
-    return t.id === id ? t : { ...t, id };
+    const copy: 0 | 1 = t.copy === 1 ? 1 : 0;
+    const id = numberedCanonicalId(t.color, t.number, copy);
+    return t.id === id && t.copy === copy ? t : { ...t, id, copy };
+  });
+
+  const seen = new Set<string>();
+  return pass1.map((t) => {
+    if (t.kind === 'fake-joker') {
+      if (!seen.has(t.id)) {
+        seen.add(t.id);
+        return t;
+      }
+      const alt: 0 | 1 = t.copy === 0 ? 1 : 0;
+      const altId = `FJ-${alt}`;
+      if (!seen.has(altId)) {
+        seen.add(altId);
+        return { ...t, copy: alt, id: altId };
+      }
+      return t;
+    }
+    if (!seen.has(t.id)) {
+      seen.add(t.id);
+      return t;
+    }
+    const altCopy: 0 | 1 = t.copy === 0 ? 1 : 0;
+    const altId = numberedCanonicalId(t.color, t.number, altCopy);
+    if (!seen.has(altId)) {
+      seen.add(altId);
+      return { ...t, copy: altCopy, id: altId };
+    }
+    if (import.meta.env.DEV) {
+      console.warn('[repairHandTileIds] aynı yüz için 2 kopyadan fazla veya id çakışması', t);
+    }
+    return t;
   });
 }

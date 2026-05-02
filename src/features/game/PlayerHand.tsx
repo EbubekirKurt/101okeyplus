@@ -7,6 +7,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IndicatorInfo } from '../../types/game';
 import { Tile } from '../../types/tile';
+import { repairHandTileIds } from '../../lib/tiles/repairTileIds';
 import { isOkey } from '../../lib/tiles/okey';
 import { TileComponent } from '../tile/Tile';
 
@@ -72,7 +73,8 @@ function canPlaceGroup(grid: Grid, row: number, startCol: number, count: number,
 }
 
 function mergeNewTilesIntoGrid(prev: Grid, tiles: Tile[]): Grid {
-  const tileById = new Map(tiles.map(t => [t.id, t]));
+  const repaired = repairHandTileIds(tiles);
+  const tileById = new Map(repaired.map(t => [t.id, t]));
 
   // Grid'deki taşlardan hâlâ elde olanları koru, olmayanları sil
   const kept = new Set<string>();
@@ -85,7 +87,7 @@ function mergeNewTilesIntoGrid(prev: Grid, tiles: Tile[]): Grid {
   }));
 
   // Elde olup grid'de olmayan taşları son müsait kareye koy
-  const missing = tiles.filter(t => !kept.has(t.id));
+  const missing = repaired.filter(t => !kept.has(t.id));
   for (const tile of missing) {
     let placed = false;
     for (let r = ROWS - 1; r >= 0 && !placed; r--) {
@@ -96,6 +98,17 @@ function mergeNewTilesIntoGrid(prev: Grid, tiles: Tile[]): Grid {
         }
       }
     }
+  }
+
+  const onGrid = gridToTilesFlat(result).length;
+  if (onGrid !== repaired.length) {
+    if (import.meta.env.DEV) {
+      console.warn('[mergeNewTilesIntoGrid] taş sayısı uyuşmuyor, ıstaka sıfırlanıyor', {
+        onGrid,
+        expected: repaired.length,
+      });
+    }
+    return tilesToGridInit(repaired);
   }
   return result;
 }

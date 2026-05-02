@@ -14,6 +14,7 @@ import {
   gridToTiles,
 } from '../../lib/auto-arrange';
 import { normalizeRackGrid, scoreVisualRack, RACK_COLS } from '../../lib/rack/visualRackScore';
+import { repairHandTileIds } from '../../lib/tiles/repairTileIds';
 import { GameState, IndicatorInfo } from '../../types/game';
 import { Meld } from '../../types/meld';
 import { Tile } from '../../types/tile';
@@ -250,14 +251,15 @@ export function GameTable({
   const pairTilesNeeded = minOpenPairs * 2;
 
   useEffect(() => {
+    const source = repairHandTileIds(hand);
     setTilesOrder(prev => {
-      const handIds = new Set(hand.map(t => t.id));
-      const handById = new Map(hand.map(t => [t.id, t]));
+      const handIds = new Set(source.map(t => t.id));
+      const handById = new Map(source.map(t => [t.id, t]));
       const kept = prev
         .filter(t => handIds.has(t.id))
         .map(t => handById.get(t.id)!);
       const keptIds = new Set(kept.map(t => t.id));
-      const added = hand.filter(t => !keptIds.has(t.id));
+      const added = source.filter(t => !keptIds.has(t.id));
       const next = [...kept, ...added];
       if (
         prev.length === next.length
