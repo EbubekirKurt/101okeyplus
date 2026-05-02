@@ -30,6 +30,8 @@ export default function App() {
               background: '#064e3b',
               color: '#d1fae5',
               border: '1px solid #065f46',
+              fontSize: 15,
+              padding: '12px 16px',
             },
           }}
         />

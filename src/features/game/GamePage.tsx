@@ -2,9 +2,28 @@ import { AnimatePresence, motion } from 'framer-motion';
 import React, { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useNavigate, useParams } from 'react-router-dom';
-import { createInitialGameState, getNextPlayer, canOpenMelds, canOpenFivePairs, isThrewOkey, calculateRoundPenalties, MIN_OPEN_POINTS } from '../../lib/engine/gameEngine';
+import {
+  createInitialGameState,
+  getNextPlayer,
+  getLeftOpponentUid,
+  canOpenMelds,
+  canOpenFivePairs,
+  isThrewOkey,
+  calculateRoundPenalties,
+  effectiveMinOpenPoints,
+  effectiveMinOpenPairCount,
+  nextMinOpenPointsAfterMeldOpen,
+  nextMinOpenPairCountAfterPairOpen,
+} from '../../lib/engine/gameEngine';
+import { peekNextDrawFromPile } from '../../lib/engine/deal';
 import { getBotDiscard } from '../../lib/bot/botStrategy';
-import { totalMeldPoints, validateFivePairs, detectMeldType } from '../../lib/melds/validateMeld';
+import {
+  totalMeldPoints,
+  validateRun,
+  validateGroup,
+  orderRunTilesForDisplay,
+  orderGroupTilesForDisplay,
+} from '../../lib/melds/validateMeld';
 import { isOkey } from '../../lib/tiles/okey';
 import { PENALTY } from '../../lib/scoring/scoreHand';
 import { appendMove, savePrivateHand, updateGame, getPrivateHand } from '../../services/firebase/games';
@@ -28,6 +47,8 @@ export function GamePage() {
   const [showScores, setShowScores] = useState(false);
   const { clearSelection } = useUIStore();
   const botTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const discardInFlightRef = useRef(false);
+  const returnPickInFlightRef = useRef(false);
 
   usePresence(gameId || null, user?.uid || null);
 
@@ -49,11 +70,16 @@ export function GamePage() {
     if (!game || !gameId) return;
     const botHand = await getPrivateHand(gameId, botUid);
     if (game.phase === 'awaiting_draw') {
+      const nextTile = peekNextDrawFromPile(game);
+      if (!nextTile) return;
+      const newBotHand = [...botHand, nextTile];
       await appendMove(gameId, { type: 'draw_from_pile', by: botUid, ts: Date.now() });
+      await savePrivateHand(gameId, botUid, newBotHand);
       await updateGame(gameId, {
         phase: 'awaiting_discard',
         drawPileCount: Math.max(0, game.drawPileCount - 1),
-        [`players.${botUid}.handCount`]: botHand.length + 1,
+        [`players.${botUid}.handCount`]: newBotHand.length,
+        mustOpenFromDiscard: null,
         lastMoveAt: Date.now(), version: game.version + 1,
       });
     } else if (game.phase === 'awaiting_discard') {
@@ -72,6 +98,7 @@ export function GamePage() {
         [`discardPiles.${botUid}`]: newPile,
         [`players.${botUid}.handCount`]: newHand.length,
         drawPileEmpty: newCount === 0,
+        mustOpenFromDiscard: null,
         lastMoveAt: Date.now(), version: game.version + 1,
       });
     }
@@ -80,15 +107,22 @@ export function GamePage() {
   async function handleDrawFromPile() {
     if (!game || !user || !isMyTurn || game.phase !== 'awaiting_draw') return;
     if (game.drawPileCount <= 0) {
-      // Draw pile empty — round ends
       await updateGame(game.id, { phase: 'round_end', drawPileEmpty: true, lastMoveAt: Date.now() });
       return;
     }
+    const nextTile = peekNextDrawFromPile(game);
+    if (!nextTile) {
+      toast.error('Bankadan taş alınamadı');
+      return;
+    }
+    const newHand = [...hand, nextTile];
     await appendMove(game.id, { type: 'draw_from_pile', by: user.uid, ts: Date.now() });
+    await savePrivateHand(game.id, user.uid, newHand);
     await updateGame(game.id, {
       phase: 'awaiting_discard',
       drawPileCount: game.drawPileCount - 1,
-      [`players.${user.uid}.handCount`]: hand.length + 1,
+      [`players.${user.uid}.handCount`]: newHand.length,
+      mustOpenFromDiscard: null,
       lastMoveAt: Date.now(), version: game.version + 1,
     });
     toast('Taş çekildi', { icon: '🀄' });
@@ -96,6 +130,11 @@ export function GamePage() {
 
   async function handleDrawFromDiscard(fromUid: string) {
     if (!game || !user || !isMyTurn || game.phase !== 'awaiting_draw') return;
+    const allowedLeft = getLeftOpponentUid(game.turnOrder, user.uid);
+    if (fromUid !== allowedLeft) {
+      toast.error('Sadece soldaki rakibin attığı taşı alabilirsin');
+      return;
+    }
     const pile = game.discardPiles[fromUid];
     if (!pile?.length) return;
     const tile = pile[pile.length - 1];
@@ -107,15 +146,70 @@ export function GamePage() {
       phase: 'awaiting_discard',
       [`discardPiles.${fromUid}`]: newPile,
       [`players.${user.uid}.handCount`]: newHand.length,
+      mustOpenFromDiscard: { pickerUid: user.uid, fromUid, tileId: tile.id },
       lastMoveAt: Date.now(), version: game.version + 1,
     });
   }
 
+  /** Soldan alınan taşı geri koy + bankadan bir taş çek (açamıyorsan). */
+  async function handleReturnDiscardDrawPile() {
+    if (returnPickInFlightRef.current) return;
+    if (!game || !user || !isMyTurn || game.phase !== 'awaiting_discard') return;
+    const mo = game.mustOpenFromDiscard;
+    if (!mo || mo.pickerUid !== user.uid) {
+      toast.error('Bu işlem sadece soldan taş aldıktan sonra kullanılabilir');
+      return;
+    }
+    const tile = hand.find(t => t.id === mo.tileId);
+    if (!tile) return;
+    if (game.drawPileCount <= 0) {
+      toast.error('Bankada taş yok');
+      return;
+    }
+    const bankTile = peekNextDrawFromPile(game);
+    if (!bankTile) {
+      toast.error('Bankadan taş alınamadı');
+      return;
+    }
+    returnPickInFlightRef.current = true;
+    try {
+      const restoredPile = [...(game.discardPiles[mo.fromUid] || []), tile];
+      const newHand = [...hand.filter(t => t.id !== mo.tileId), bankTile];
+      await appendMove(game.id, {
+        type: 'return_discard_draw_pile',
+        by: user.uid,
+        fromUid: mo.fromUid,
+        returnedTileId: mo.tileId,
+        ts: Date.now(),
+      });
+      await savePrivateHand(game.id, user.uid, newHand);
+      await updateGame(game.id, {
+        mustOpenFromDiscard: null,
+        [`discardPiles.${mo.fromUid}`]: restoredPile,
+        drawPileCount: game.drawPileCount - 1,
+        [`players.${user.uid}.handCount`]: newHand.length,
+        lastMoveAt: Date.now(), version: game.version + 1,
+      });
+      toast('Taş iade edildi, bankadan çekildi', { icon: '🀄' });
+    } finally {
+      returnPickInFlightRef.current = false;
+    }
+  }
+
   async function handleDiscard(tileId: string) {
+    if (discardInFlightRef.current) return;
     if (!game || !user || !isMyTurn || game.phase !== 'awaiting_discard') return;
     const tile = hand.find(t => t.id === tileId);
     if (!tile) return;
 
+    const mo = game.mustOpenFromDiscard;
+    if (mo && mo.pickerUid === user.uid && hand.some(t => t.id === mo.tileId)) {
+      toast.error('Soldan aldığın taşla önce seri veya çift açmalısın — yoksa «Geri Ver» ile iade edip bankadan çek.');
+      return;
+    }
+
+    discardInFlightRef.current = true;
+    try {
     // Check okey penalty
     const threwOkey = isThrewOkey(tileId, hand, game.indicator!);
     if (threwOkey) {
@@ -141,65 +235,198 @@ export function GamePage() {
       [`discardPiles.${user.uid}`]: newPile,
       [`players.${user.uid}.handCount`]: newHand.length,
       islek: null,
+      mustOpenFromDiscard: null,
       lastMoveAt: Date.now(), version: game.version + 1,
     });
     clearSelection();
+    } finally {
+      discardInFlightRef.current = false;
+    }
   }
 
-  // Regular meld opening — must total >= 101 points
-  async function handleOpenMelds(melds: Meld[]) {
-    if (!game || !user || !isMyTurn) return;
+  // Regular meld opening — must total >= 101 points (birden fazla per tek hamlede olabilir)
+  async function handleOpenMelds(melds: Meld[]): Promise<boolean> {
+    if (!game || !user || !isMyTurn) return false;
+    if (game.players[user.uid]?.hasOpened) {
+      toast.error('Elini zaten açtın');
+      return false;
+    }
 
-    const check = canOpenMelds(melds, game.indicator!, hand);
-    if (!check.valid) { toast.error(check.reason ?? 'Geçersiz açılış'); return; }
+    const minPts = effectiveMinOpenPoints(game);
+    const check = canOpenMelds(melds, game.indicator!, hand, minPts);
+    if (!check.valid) { toast.error(check.reason ?? 'Geçersiz açılış'); return false; }
 
     const usedIds = new Set(melds.flatMap(m => m.tiles.map(t => t.id)));
+    const mo = game.mustOpenFromDiscard;
+    if (mo && mo.pickerUid === user.uid && !usedIds.has(mo.tileId)) {
+      toast.error('Soldan aldığın taşı açılışa dahil etmelisin');
+      return false;
+    }
     const newHand = hand.filter(t => !usedIds.has(t.id));
     const points = totalMeldPoints(melds, game.indicator!);
 
-    await appendMove(game.id, { type: 'open_melds', by: user.uid, melds, ts: Date.now() });
-    await savePrivateHand(game.id, user.uid, newHand);
-    await updateGame(game.id, {
-      melds: [...game.melds, ...melds],
-      [`players.${user.uid}.hasOpened`]: true,
-      [`players.${user.uid}.handCount`]: newHand.length,
-      lastMoveAt: Date.now(),
-    });
+    try {
+      await appendMove(game.id, { type: 'open_melds', by: user.uid, melds, ts: Date.now() });
+      await savePrivateHand(game.id, user.uid, newHand);
+      await updateGame(game.id, {
+        melds: [...game.melds, ...melds],
+        [`players.${user.uid}.hasOpened`]: true,
+        [`players.${user.uid}.handCount`]: newHand.length,
+        minOpenPoints: nextMinOpenPointsAfterMeldOpen(points),
+        ...(mo && mo.pickerUid === user.uid && usedIds.has(mo.tileId) ? { mustOpenFromDiscard: null } : {}),
+        lastMoveAt: Date.now(),
+        version: game.version + 1,
+      });
+    } catch {
+      toast.error('Açılış kaydedilemedi, tekrar dene');
+      return false;
+    }
     toast.success(`El açıldı! ${points} puan ✓`);
+    return true;
   }
 
-  // 5 çift açma
-  async function handleOpenFivePairs(tiles: Tile[]) {
-    if (!game || !user || !isMyTurn) return;
-    const check = canOpenFivePairs(tiles, game.indicator!, hand);
-    if (!check.valid) { toast.error(check.reason ?? 'Geçersiz çift açma'); return; }
+  /** Açtıktan sonra eldeki geçerli yeni per(ler)i masaya ekle (min puan şartı yok). */
+  async function handleLayAdditionalMelds(melds: Meld[]): Promise<boolean> {
+    if (!game || !user || !isMyTurn || game.phase !== 'awaiting_discard') return false;
+    if (!game.players[user.uid]?.hasOpened) {
+      toast.error('Önce elini açmalısın');
+      return false;
+    }
+    const check = canOpenMelds(melds, game.indicator!, hand, 0);
+    if (!check.valid) {
+      toast.error(check.reason ?? 'Geçersiz per');
+      return false;
+    }
+    const usedIds = new Set(melds.flatMap(m => m.tiles.map(t => t.id)));
+    const mo = game.mustOpenFromDiscard;
+    if (mo && mo.pickerUid === user.uid && !usedIds.has(mo.tileId)) {
+      toast.error('Soldan aldığın taşı yeni perde kullanmalısın');
+      return false;
+    }
+    const newHand = hand.filter(t => !usedIds.has(t.id));
+    try {
+      await appendMove(game.id, { type: 'lay_melds', by: user.uid, melds, ts: Date.now() });
+      await savePrivateHand(game.id, user.uid, newHand);
+      await updateGame(game.id, {
+        melds: [...game.melds, ...melds],
+        [`players.${user.uid}.handCount`]: newHand.length,
+        ...(mo && mo.pickerUid === user.uid && usedIds.has(mo.tileId) ? { mustOpenFromDiscard: null } : {}),
+        lastMoveAt: Date.now(),
+        version: game.version + 1,
+      });
+    } catch {
+      toast.error('Kaydedilemedi, tekrar dene');
+      return false;
+    }
+    toast.success('Per masaya eklendi');
+    return true;
+  }
+
+  async function handleOpenFivePairs(tiles: Tile[]): Promise<boolean> {
+    if (!game || !user || !isMyTurn) return false;
+    if (game.players[user.uid]?.hasOpened) {
+      toast.error('Elini zaten açtın');
+      return false;
+    }
+    const minPairs = effectiveMinOpenPairCount(game);
+    const check = canOpenFivePairs(tiles, game.indicator!, hand, minPairs);
+    if (!check.valid) { toast.error(check.reason ?? 'Geçersiz çift açma'); return false; }
 
     const usedIds = new Set(tiles.map(t => t.id));
+    const mo = game.mustOpenFromDiscard;
+    if (mo && mo.pickerUid === user.uid && !usedIds.has(mo.tileId)) {
+      toast.error(`Soldan aldığın taşı ${minPairs} çift açılışına dahil etmelisin`);
+      return false;
+    }
     const newHand = hand.filter(t => !usedIds.has(t.id));
 
-    await appendMove(game.id, { type: 'open_five_pairs', by: user.uid, tiles, ts: Date.now() });
-    await savePrivateHand(game.id, user.uid, newHand);
-    await updateGame(game.id, {
-      [`players.${user.uid}.hasOpened`]: true,
-      [`players.${user.uid}.handCount`]: newHand.length,
-      lastMoveAt: Date.now(),
-    });
-    toast.success('5 Çift açıldı! ✓');
+    try {
+      await appendMove(game.id, { type: 'open_five_pairs', by: user.uid, tiles, ts: Date.now() });
+      await savePrivateHand(game.id, user.uid, newHand);
+      await updateGame(game.id, {
+        [`players.${user.uid}.hasOpened`]: true,
+        [`players.${user.uid}.handCount`]: newHand.length,
+        minOpenPairCount: nextMinOpenPairCountAfterPairOpen(minPairs),
+        ...(mo && mo.pickerUid === user.uid && usedIds.has(mo.tileId) ? { mustOpenFromDiscard: null } : {}),
+        lastMoveAt: Date.now(),
+        version: game.version + 1,
+      });
+    } catch {
+      toast.error('Açılış kaydedilemedi, tekrar dene');
+      return false;
+    }
+    toast.success(`${minPairs} çift açıldı ✓`);
+    return true;
   }
 
   async function handleExtendMeld(meldId: string, tileIds: string[]) {
-    if (!game || !user) return;
+    if (!game || !user || !game.indicator) return;
+    if (!isMyTurn || game.phase !== 'awaiting_discard') return;
+    if (!game.players[user.uid]?.hasOpened) {
+      toast.error('Önce elini açmalısın');
+      return;
+    }
+    if (tileIds.length === 0) {
+      toast.error('Taş seç');
+      return;
+    }
     const meld = game.melds.find(m => m.id === meldId);
     if (!meld) return;
+    if (meld.ownerId !== user.uid) {
+      toast.error('Sadece kendi perlerine taş ekleyebilirsin');
+      return;
+    }
+    const ind = game.indicator;
     const tiles = hand.filter(t => tileIds.includes(t.id));
-    const newMelds = game.melds.map(m => m.id === meldId ? { ...m, tiles: [...m.tiles, ...tiles] } : m);
+    if (tiles.length !== tileIds.length) {
+      toast.error('Seçilen taşlar elinde bulunamadı');
+      return;
+    }
+    const merged = [...meld.tiles, ...tiles];
+
+    let ordered: Tile[];
+    if (meld.type === 'run') {
+      if (!validateRun(merged, ind)) {
+        toast.error('Bu taşlar bu seriyle aynı renkte ardışık sayı olarak birleşemez');
+        return;
+      }
+      const runOrdered = orderRunTilesForDisplay(merged, ind);
+      if (!runOrdered) {
+        toast.error('Seri sıralanamadı');
+        return;
+      }
+      ordered = runOrdered;
+    } else {
+      if (!validateGroup(merged, ind)) {
+        toast.error('Bu taşlar bu grupla birleşemez');
+        return;
+      }
+      const groupOrdered = orderGroupTilesForDisplay(merged, ind);
+      if (!groupOrdered) {
+        toast.error('Grup sıralanamadı');
+        return;
+      }
+      ordered = groupOrdered;
+    }
+
+    const newMelds = game.melds.map(m => (m.id === meldId ? { ...m, tiles: ordered } : m));
     const newHand = hand.filter(t => !tileIds.includes(t.id));
-    await savePrivateHand(game.id, user.uid, newHand);
-    await updateGame(game.id, {
-      melds: newMelds,
-      [`players.${user.uid}.handCount`]: newHand.length,
-      lastMoveAt: Date.now(),
-    });
+    const mo = game.mustOpenFromDiscard;
+    const clearMo = mo && mo.pickerUid === user.uid && tileIds.includes(mo.tileId);
+    try {
+      await appendMove(game.id, { type: 'extend_meld', by: user.uid, meldId, tileIds, ts: Date.now() });
+      await savePrivateHand(game.id, user.uid, newHand);
+      await updateGame(game.id, {
+        melds: newMelds,
+        [`players.${user.uid}.handCount`]: newHand.length,
+        ...(clearMo ? { mustOpenFromDiscard: null } : {}),
+        lastMoveAt: Date.now(),
+        version: game.version + 1,
+      });
+    } catch {
+      toast.error('Kaydedilemedi, tekrar dene');
+      return;
+    }
     toast.success('Taş işlendi!');
   }
 
@@ -254,28 +481,48 @@ export function GamePage() {
   );
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: '#0d0802' }}>
+    <div className="flex min-h-dvh flex-col" style={{ background: '#0f1510' }}>
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-2 flex-shrink-0"
-        style={{ background: 'rgba(0,0,0,0.7)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-        <button onClick={() => navigate('/')} className="text-gray-600 hover:text-gray-300 text-sm transition-colors">← Çık</button>
-        <div className="flex items-center gap-2">
-          <span className="text-yellow-600 font-bold">101 Okey Plus</span>
-          <span className="text-gray-700 text-xs">Tur {game.roundNumber}</span>
+      <div
+        className="flex items-center justify-between gap-3 flex-shrink-0 px-3 sm:px-4 py-3 min-h-[58px]"
+        style={{ background: 'rgba(0,0,0,0.82)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}
+      >
+        <button
+          type="button"
+          onClick={() => navigate('/')}
+          className="shrink-0 rounded-lg border border-amber-900/40 bg-amber-950/30 px-4 py-2.5 text-base font-semibold text-amber-100 hover:bg-amber-900/40 hover:text-white transition-colors"
+        >
+          ← Çık
+        </button>
+        <div className="flex min-w-0 flex-col items-center justify-center px-2 text-center">
+          <span className="truncate font-black tracking-tight text-amber-400 text-lg sm:text-xl max-w-[56vw]">
+            101 Okey Plus
+          </span>
+          <span className="text-sm font-medium text-neutral-500">Tur {game.roundNumber}</span>
         </div>
-        <button onClick={() => setShowScores(s => !s)} className="text-gray-600 hover:text-yellow-500 text-sm transition-colors">📊</button>
+        <button
+          type="button"
+          onClick={() => setShowScores(s => !s)}
+          className="shrink-0 rounded-lg border border-amber-900/40 bg-amber-950/30 px-4 py-2.5 text-base font-semibold text-amber-100 hover:bg-amber-900/40 hover:text-white transition-colors"
+        >
+          📊 Skor
+        </button>
       </div>
 
-      {/* Table */}
-      <div className="flex-1 p-2 min-h-0">
-        <div className="h-full rounded-2xl overflow-hidden"
-          style={{ boxShadow: '0 0 0 4px #3d2008, 0 0 0 7px #1f1004, 0 0 40px rgba(0,0,0,0.8)' }}>
+      {/* Table — kalan tüm dikey alanı doldurur (altta siyah şerit kalmaz) */}
+      <div className="flex flex-1 flex-col min-h-0 px-1 pb-1 pt-0 sm:px-2 sm:pb-2">
+        <div
+          className="flex flex-1 flex-col min-h-0 overflow-hidden rounded-2xl"
+          style={{ boxShadow: '0 0 0 4px #3d2008, 0 0 0 7px #1f1004, 0 0 40px rgba(0,0,0,0.8)' }}
+        >
           <GameTable
             game={game} myUid={user.uid} hand={hand}
             onDrawFromPile={handleDrawFromPile}
             onDrawFromDiscard={handleDrawFromDiscard}
+            onReturnDiscardDrawPile={handleReturnDiscardDrawPile}
             onDiscard={handleDiscard}
             onOpenMelds={handleOpenMelds}
+            onLayAdditionalMelds={handleLayAdditionalMelds}
             onOpenFivePairs={handleOpenFivePairs}
             onExtendMeld={handleExtendMeld}
             onDeclareFinish={handleDeclareFinish}

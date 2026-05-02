@@ -1,29 +1,28 @@
 import { IndicatorInfo } from '../../types/game';
 import { Meld } from '../../types/meld';
 import { Tile, TileColor } from '../../types/tile';
-import { isOkey } from '../tiles/okey';
+import { isOkey, tileMeldFace, type TileMeldFace } from '../tiles/okey';
 
-function isWildcard(tile: Tile, indicator: IndicatorInfo): boolean {
-  return isOkey(tile, indicator);
-}
+const GROUP_COLOR_ORDER: TileColor[] = ['red', 'blue', 'black', 'yellow'];
 
 export function validateGroup(tiles: Tile[], indicator: IndicatorInfo): boolean {
   if (tiles.length < 3 || tiles.length > 4) return false;
 
-  const realTiles = tiles.filter(t => !isWildcard(t, indicator));
-  if (realTiles.length === 0) return tiles.length >= 3;
+  const faces = tiles.map(t => tileMeldFace(t, indicator));
+  if (faces.some(f => f === null)) return false;
 
-  const first = realTiles[0] as Extract<Tile, { kind: 'numbered' }>;
-  if (first.kind !== 'numbered') return false;
+  const wildCount = faces.filter(f => f!.kind === 'wildcard').length;
+  const fixed = faces.filter((f): f is Extract<TileMeldFace, { kind: 'fixed' }> => f!.kind === 'fixed');
 
-  const targetNum = first.number;
+  if (fixed.length === 0) return tiles.length >= 3;
+
+  const targetNum = fixed[0].number;
   const colors = new Set<TileColor>();
 
-  for (const tile of realTiles) {
-    if (tile.kind !== 'numbered') return false;
-    if (tile.number !== targetNum) return false;
-    if (colors.has(tile.color)) return false;
-    colors.add(tile.color);
+  for (const f of fixed) {
+    if (f.number !== targetNum) return false;
+    if (colors.has(f.color)) return false;
+    colors.add(f.color);
   }
   return true;
 }
@@ -31,47 +30,50 @@ export function validateGroup(tiles: Tile[], indicator: IndicatorInfo): boolean 
 export function validateRun(tiles: Tile[], indicator: IndicatorInfo): boolean {
   if (tiles.length < 3) return false;
 
-  const realTiles = tiles.filter(t => !isWildcard(t, indicator));
-  const wildcardCount = tiles.length - realTiles.length;
+  const faces = tiles.map(t => tileMeldFace(t, indicator));
+  if (faces.some(f => f === null)) return false;
 
-  if (realTiles.length === 0) return wildcardCount >= 3;
+  const fixed = faces.filter((f): f is Extract<TileMeldFace, { kind: 'fixed' }> => f!.kind === 'fixed');
+  const wildcardCount = faces.filter(f => f!.kind === 'wildcard').length;
 
-  const first = realTiles[0] as Extract<Tile, { kind: 'numbered' }>;
-  if (first.kind !== 'numbered') return false;
+  if (fixed.length === 0) return wildcardCount >= 3;
 
-  const targetColor = first.color;
-  for (const tile of realTiles) {
-    if (tile.kind !== 'numbered') return false;
-    if (tile.color !== targetColor) return false;
+  const targetColor = fixed[0].color;
+  for (const f of fixed) {
+    if (f.color !== targetColor) return false;
   }
 
-  const nums = realTiles.map(t => (t as Extract<Tile, { kind: 'numbered' }>).number).sort((a, b) => a - b);
+  const nums = fixed.map(f => f.number).sort((a, b) => a - b);
   for (let i = 0; i < nums.length - 1; i++) {
     if (nums[i] === nums[i + 1]) return false;
   }
 
   const span = nums[nums.length - 1] - nums[0] + 1;
-  const gaps = span - realTiles.length;
+  const gaps = span - fixed.length;
   if (gaps > wildcardCount) return false;
   if (span > 13 || tiles.length > 13) return false;
 
   return true;
 }
 
-// 5 çift açma — 5 pair of matching tiles (same number + same color)
-export function validateFivePairs(tiles: Tile[], indicator: IndicatorInfo): boolean {
-  if (tiles.length !== 10) return false;
+/** N çift açma (5 veya 10): aynı renk ve sayıdan çiftler; gerçek okey joker sayılır. */
+export function validateNPairs(tiles: Tile[], indicator: IndicatorInfo, pairCount: number): boolean {
+  if (tiles.length !== pairCount * 2) return false;
 
-  // Group tiles by (color, number)
   const counts = new Map<string, number>();
   for (const tile of tiles) {
-    if (isWildcard(tile, indicator)) continue;
-    if (tile.kind !== 'numbered') return false;
-    const key = `${tile.color}-${tile.number}`;
+    const f = tileMeldFace(tile, indicator);
+    if (f === null) return false;
+    if (f.kind === 'wildcard') continue;
+    const key = `${f.color}-${f.number}`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
 
-  const wildcards = tiles.filter(t => isWildcard(t, indicator)).length;
+  const wildcards = tiles.filter(t => {
+    const f = tileMeldFace(t, indicator);
+    return f?.kind === 'wildcard';
+  }).length;
+
   let pairs = 0;
   let singles = 0;
 
@@ -80,18 +82,22 @@ export function validateFivePairs(tiles: Tile[], indicator: IndicatorInfo): bool
     singles += count % 2;
   }
 
-  // Wildcards can complete singles into pairs
   const wildcardsNeeded = singles;
   if (wildcards < wildcardsNeeded) return false;
 
-  return pairs + Math.floor((singles + wildcards) / 2) >= 5;
+  return pairs + Math.floor((singles + wildcards) / 2) >= pairCount;
+}
+
+export function validateFivePairs(tiles: Tile[], indicator: IndicatorInfo): boolean {
+  return validateNPairs(tiles, indicator, 5);
 }
 
 export function meldPoints(tiles: Tile[], indicator: IndicatorInfo): number {
   return tiles.reduce((sum, tile) => {
     if (tile.kind === 'fake-joker') return sum + 30;
-    if (isWildcard(tile, indicator)) return sum + tile.number;
-    return sum + tile.number;
+    if (isOkey(tile, indicator)) return sum + tile.number;
+    if (tile.kind === 'numbered') return sum + tile.number;
+    return sum;
   }, 0);
 }
 
@@ -109,4 +115,75 @@ export function detectMeldType(tiles: Tile[], indicator: IndicatorInfo): 'group'
   if (validateGroup(tiles, indicator)) return 'group';
   if (validateRun(tiles, indicator)) return 'run';
   return null;
+}
+
+/** [low, high] aralığına taşları (sabit sayı + joker) yerleştirilebiliyorsa sol→sağ sıra döner. */
+function tryAssignRunInterval(low: number, high: number, tiles: Tile[], indicator: IndicatorInfo): Tile[] | null {
+  const need = high - low + 1;
+  if (need !== tiles.length) return null;
+  const slot: (Tile | null)[] = Array(need).fill(null);
+  const wilds: Tile[] = [];
+  for (const t of tiles) {
+    const f = tileMeldFace(t, indicator);
+    if (!f) return null;
+    if (f.kind === 'wildcard') {
+      wilds.push(t);
+      continue;
+    }
+    const pos = f.number - low;
+    if (pos < 0 || pos >= need) return null;
+    if (slot[pos]) return null;
+    slot[pos] = t;
+  }
+  for (let i = 0; i < need; i++) {
+    if (slot[i] === null) {
+      const w = wilds.shift();
+      if (!w) return null;
+      slot[i] = w;
+    }
+  }
+  if (wilds.length > 0) return null;
+  return slot as Tile[];
+}
+
+/** Geçerli serideki taşları artan sayı sırasına (masada sol→sağ) koyar; 7-8-9’a 6 veya 10 eklenince doğru uçta durur. */
+export function orderRunTilesForDisplay(tiles: Tile[], indicator: IndicatorInfo): Tile[] | null {
+  if (!validateRun(tiles, indicator)) return null;
+  const n = tiles.length;
+  for (let low = 1; low <= 13; low++) {
+    const high = low + n - 1;
+    if (high > 13) break;
+    const ordered = tryAssignRunInterval(low, high, tiles, indicator);
+    if (ordered) return ordered;
+  }
+  return null;
+}
+
+/** Geçerli grupta taşları renk sırasına göre dizeler (jokerler sonda). */
+export function orderGroupTilesForDisplay(tiles: Tile[], indicator: IndicatorInfo): Tile[] | null {
+  if (!validateGroup(tiles, indicator)) return null;
+  const wilds: Tile[] = [];
+  const fixed: Tile[] = [];
+  for (const t of tiles) {
+    const f = tileMeldFace(t, indicator);
+    if (!f) continue;
+    if (f.kind === 'wildcard') wilds.push(t);
+    else fixed.push(t);
+  }
+  const colorIdx = (t: Tile) => {
+    const f = tileMeldFace(t, indicator);
+    if (!f || f.kind !== 'fixed') return 99;
+    return GROUP_COLOR_ORDER.indexOf(f.color);
+  };
+  const rank = (t: Tile) => {
+    const f = tileMeldFace(t, indicator);
+    return f?.kind === 'fixed' ? f.number : 0;
+  };
+  fixed.sort((a, b) => {
+    const ca = colorIdx(a);
+    const cb = colorIdx(b);
+    if (ca !== cb) return ca - cb;
+    return rank(a) - rank(b);
+  });
+  return [...fixed, ...wilds];
 }

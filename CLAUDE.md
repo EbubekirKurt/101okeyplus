@@ -40,7 +40,7 @@ games/{gameId}/moves/{id}      Append-only move log
 ### Game Rules (101 Okey — critical differences from regular Okey)
 - **Deal**: dealer gets 22 tiles, others get 21. 1 indicator tile left face-up. ~20 tiles remain in draw pile.
 - **Opening**: player must lay down melds totalling **≥ 101 points** to open (`MIN_OPEN_POINTS` constant). Alternative: 5 pairs (çift açma) using exactly 10 tiles.
-- **Okey tile**: one number above the indicator, same color. Fake jokers (2 in deck) are always wildcards.
+- **Okey tile**: one number above the indicator, same color (this numbered tile is the meld wildcard). Fake jokers (2 in deck) only count as that same okey face, not as arbitrary wildcards.
 - **Tile ID format**: `"R-7-0"` (color initial, number, copy 0/1), fake jokers `"FJ-0"` / `"FJ-1"`.
 - **Penalties**: threw okey = +101, can't open when game ends = +202, draw pile empties without opening = +404.
 - **işlek**: if a player discards a tile someone could use, opponents can call işlek (+101 to discarder). State tracked in `game.islek`.

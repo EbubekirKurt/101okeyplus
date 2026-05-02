@@ -3,6 +3,13 @@ import React from 'react';
 import { IndicatorInfo } from '../../types/game';
 import { Tile as TileType } from '../../types/tile';
 import { isOkey } from '../../lib/tiles/okey';
+import { useUIStore } from '../../state/store';
+
+function isRealOkeyNumbered(tile: TileType, indicator: IndicatorInfo): boolean {
+  return tile.kind === 'numbered'
+    && tile.color === indicator.okeyColor
+    && tile.number === indicator.okeyNumber;
+}
 
 interface TileProps {
   tile: TileType;
@@ -14,6 +21,10 @@ interface TileProps {
   size?: 'xs' | 'sm' | 'md' | 'lg';
   className?: string;
   layoutId?: string;
+  /** When true, disables Framer layoutId/layout crossfade (avoids wrong tile morphing on the rack). */
+  disableSharedLayout?: boolean;
+  /** Rack: skip hover/tap springs so timer/re-renders do not fight the pointer and jitter tiles. */
+  suppressMicroMotion?: boolean;
 }
 
 const COLOR_HEX = {
@@ -24,24 +35,34 @@ const COLOR_HEX = {
 };
 
 const SIZE = {
-  xs: { w: 28, h: 40, num: 13, star: 9 },
-  sm: { w: 36, h: 52, num: 17, star: 11 },
-  md: { w: 44, h: 62, num: 22, star: 13 },
-  lg: { w: 54, h: 76, num: 28, star: 15 },
+  xs: { w: 32, h: 46, num: 15, star: 10 },
+  sm: { w: 42, h: 60, num: 20, star: 13 },
+  md: { w: 52, h: 74, num: 26, star: 15 },
+  lg: { w: 62, h: 90, num: 31, star: 18 },
 };
 
 export function TileComponent({
   tile, indicator, selected, onClick, dragging, faceDown, size = 'md', className = '', layoutId,
+  disableSharedLayout, suppressMicroMotion,
 }: TileProps) {
   const sz = SIZE[size];
-  const isWild = tile.kind === 'fake-joker' || (indicator ? isOkey(tile, indicator) : false);
+  const isWild = Boolean(indicator && isOkey(tile, indicator));
+  const okeyFaceHidden = useUIStore(s => s.okeyFaceHiddenIds.has(tile.id));
+  const toggleOkeyFaceHidden = useUIStore(s => s.toggleOkeyFaceHidden);
+  const isNumberedOkey = indicator ? isRealOkeyNumbered(tile, indicator) : false;
+  const showBlankOkeyFace = isNumberedOkey && okeyFaceHidden;
+
+  function handleClick() {
+    if (isNumberedOkey) toggleOkeyFaceHidden(tile.id);
+    onClick?.();
+  }
 
   if (faceDown) {
     return (
       <div
         style={{ width: sz.w, height: sz.h }}
         className={`rounded-lg flex-shrink-0 ${className}`}
-        onClick={onClick}
+        onClick={handleClick}
       >
         <div
           className="w-full h-full rounded-lg"
@@ -56,14 +77,45 @@ export function TileComponent({
   }
 
   const color = tile.kind === 'numbered' ? COLOR_HEX[tile.color] : '#7c3aed';
-  const number = tile.kind === 'numbered' ? tile.number : '★';
+
+  const motionLayoutProps = disableSharedLayout
+    ? { layout: false as const }
+    : { layoutId: layoutId ?? tile.id };
+
+  if (showBlankOkeyFace) {
+    return (
+      <motion.div
+        {...motionLayoutProps}
+        onClick={handleClick}
+        whileHover={suppressMicroMotion || dragging ? {} : { y: -5, scale: 1.07 }}
+        whileTap={suppressMicroMotion ? {} : { scale: 0.94 }}
+        transition={{ type: 'spring', stiffness: 600, damping: 28 }}
+        style={{ width: sz.w, height: sz.h }}
+        className={`relative rounded-lg flex-shrink-0 cursor-pointer select-none ${className}`}
+      >
+        <div
+          className="w-full h-full rounded-lg relative overflow-hidden"
+          style={{
+            background: '#ffffff',
+            border: selected ? `2px solid ${color}` : '1.5px solid #e5e5e5',
+            boxShadow: selected
+              ? `0 0 0 2px ${color}40, 0 6px 16px rgba(0,0,0,0.2)`
+              : dragging
+                ? '0 12px 32px rgba(0,0,0,0.35)'
+                : '0 3px 8px rgba(0,0,0,0.15)',
+            transform: selected ? 'translateY(-8px)' : undefined,
+          }}
+        />
+      </motion.div>
+    );
+  }
 
   return (
     <motion.div
-      layoutId={layoutId ?? tile.id}
-      onClick={onClick}
-      whileHover={!dragging ? { y: -5, scale: 1.07 } : {}}
-      whileTap={{ scale: 0.94 }}
+      {...motionLayoutProps}
+      onClick={handleClick}
+      whileHover={suppressMicroMotion || dragging ? {} : { y: -5, scale: 1.07 }}
+      whileTap={suppressMicroMotion ? {} : { scale: 0.94 }}
       transition={{ type: 'spring', stiffness: 600, damping: 28 }}
       style={{ width: sz.w, height: sz.h }}
       className={`relative rounded-lg flex-shrink-0 cursor-pointer select-none ${className}`}

@@ -21,7 +21,7 @@ export function ScoreBoard({ game, onClose }: ScoreBoardProps) {
         <h2 className="text-amber-300 font-bold text-xl">Skor Tablosu</h2>
         <button onClick={onClose} className="text-emerald-400 hover:text-white transition-colors text-xl">×</button>
       </div>
-      <p className="text-emerald-400 text-sm mb-4">Tur: {game.roundNumber}</p>
+      <p className="text-emerald-400 text-base mb-4">Tur: {game.roundNumber}</p>
 
       <div className="space-y-2">
         {players.sort((a, b) => a.totalScore - b.totalScore).map((player) => (
@@ -40,9 +40,9 @@ export function ScoreBoard({ game, onClose }: ScoreBoardProps) {
                 {player.displayName.charAt(0).toUpperCase()}
               </div>
               <div>
-                <p className="text-white font-medium text-sm">{player.displayName}</p>
+                <p className="text-white font-medium text-base">{player.displayName}</p>
                 {player.eliminated && (
-                  <p className="text-red-400 text-xs">Elendi</p>
+                  <p className="text-red-400 text-sm">Elendi</p>
                 )}
               </div>
             </div>
@@ -53,7 +53,7 @@ export function ScoreBoard({ game, onClose }: ScoreBoardProps) {
               }`}>
                 {player.totalScore}
               </p>
-              <p className="text-emerald-500 text-xs">/ 101</p>
+              <p className="text-emerald-500 text-sm">/ 101</p>
             </div>
           </div>
         ))}

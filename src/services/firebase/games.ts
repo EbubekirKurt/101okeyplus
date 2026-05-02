@@ -12,6 +12,7 @@ import {
   onSnapshot as onSnap,
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
+import { repairHandTileIds } from '../../lib/tiles/repairTileIds';
 import { GameState, MoveType } from '../../types/game';
 import { Tile } from '../../types/tile';
 
@@ -35,18 +36,18 @@ export function subscribeGame(gameId: string, callback: (game: GameState | null)
 }
 
 export async function savePrivateHand(gameId: string, uid: string, tiles: Tile[]): Promise<void> {
-  await setDoc(doc(db, 'games', gameId, 'hands', uid), { uid, tiles });
+  await setDoc(doc(db, 'games', gameId, 'hands', uid), { uid, tiles: repairHandTileIds(tiles) });
 }
 
 export async function getPrivateHand(gameId: string, uid: string): Promise<Tile[]> {
   const snap = await getDoc(doc(db, 'games', gameId, 'hands', uid));
   if (!snap.exists()) return [];
-  return (snap.data() as { tiles: Tile[] }).tiles;
+  return repairHandTileIds((snap.data() as { tiles: Tile[] }).tiles);
 }
 
 export function subscribeHand(gameId: string, uid: string, callback: (tiles: Tile[]) => void) {
   return onSnapshot(doc(db, 'games', gameId, 'hands', uid), (snap) => {
-    callback(snap.exists() ? (snap.data() as { tiles: Tile[] }).tiles : []);
+    callback(snap.exists() ? repairHandTileIds((snap.data() as { tiles: Tile[] }).tiles) : []);
   });
 }
 

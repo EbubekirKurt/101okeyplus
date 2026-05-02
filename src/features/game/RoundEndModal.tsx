@@ -49,7 +49,7 @@ export function RoundEndModal({ game, myUid, onNextRound }: RoundEndModalProps) 
                   <span className={`font-bold ${player.roundScore === 0 ? 'text-green-400' : 'text-white'}`}>
                     +{player.roundScore}
                   </span>
-                  <span className="text-emerald-400 text-sm ml-2">= {player.totalScore}</span>
+                  <span className="text-emerald-400 text-base ml-2">= {player.totalScore}</span>
                 </div>
               </div>
             ))}
@@ -58,12 +58,12 @@ export function RoundEndModal({ game, myUid, onNextRound }: RoundEndModalProps) 
         {isHost ? (
           <button
             onClick={onNextRound}
-            className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-white font-bold rounded-xl transition-colors"
+            className="w-full py-3.5 text-lg bg-amber-500 hover:bg-amber-400 text-white font-bold rounded-xl transition-colors"
           >
             Sonraki Tura Geç
           </button>
         ) : (
-          <p className="text-center text-emerald-400 text-sm">Host'un sonraki turu başlatması bekleniyor...</p>
+          <p className="text-center text-emerald-400 text-base">Host'un sonraki turu başlatması bekleniyor...</p>
         )}
       </motion.div>
     </div>

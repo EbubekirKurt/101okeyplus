@@ -32,3 +32,12 @@ export function dealGame(playerUids: string[], seed: number): DealResult {
 
   return { hands, drawPile, indicator };
 }
+
+/** Next card that will be taken from the bank (same order as `drawPile[0]` first). */
+export function peekNextDrawFromPile(game: { seed: number; turnOrder: string[]; drawPileCount: number }): Tile | null {
+  const { drawPile } = dealGame(game.turnOrder, game.seed);
+  const n = game.drawPileCount;
+  if (n <= 0 || n > drawPile.length) return null;
+  const i = drawPile.length - n;
+  return drawPile[i] ?? null;
+}
