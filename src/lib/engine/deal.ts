@@ -37,7 +37,10 @@ export function dealGame(playerUids: string[], seed: number): DealResult {
 export function peekNextDrawFromPile(game: { seed: number; turnOrder: string[]; drawPileCount: number }): Tile | null {
   const { drawPile } = dealGame(game.turnOrder, game.seed);
   const n = game.drawPileCount;
-  if (n <= 0 || n > drawPile.length) return null;
+  if (n <= 0 || n > drawPile.length) {
+    console.warn('[peekNextDraw] null!', { n, drawPileLen: drawPile.length, seed: game.seed, turnOrder: game.turnOrder });
+    return null;
+  }
   const i = drawPile.length - n;
   return drawPile[i] ?? null;
 }

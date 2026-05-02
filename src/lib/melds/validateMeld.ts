@@ -92,7 +92,7 @@ export function validateFivePairs(tiles: Tile[], indicator: IndicatorInfo): bool
   return validateNPairs(tiles, indicator, 5);
 }
 
-export function meldPoints(tiles: Tile[], indicator: IndicatorInfo): number {
+function meldPointsLegacyPhysical(tiles: Tile[], indicator: IndicatorInfo): number {
   return tiles.reduce((sum, tile) => {
     if (tile.kind === 'fake-joker') return sum + 30;
     if (isOkey(tile, indicator)) return sum + tile.number;
@@ -101,9 +101,56 @@ export function meldPoints(tiles: Tile[], indicator: IndicatorInfo): number {
   }, 0);
 }
 
+function meldPointsGroup(tiles: Tile[], indicator: IndicatorInfo): number {
+  const faces = tiles.map(t => tileMeldFace(t, indicator));
+  const fixed = faces.filter((f): f is Extract<TileMeldFace, { kind: 'fixed' }> => f?.kind === 'fixed');
+  const targetNum = fixed.length > 0 ? fixed[0].number : indicator.okeyNumber;
+  let sum = 0;
+  for (const t of tiles) {
+    if (t.kind === 'fake-joker') sum += 30;
+    else if (isOkey(t, indicator)) sum += targetNum;
+    else if (t.kind === 'numbered') sum += t.number;
+  }
+  return sum;
+}
+
+function meldPointsRun(tiles: Tile[], indicator: IndicatorInfo): number {
+  const n = tiles.length;
+  for (let low = 1; low <= 13; low++) {
+    const high = low + n - 1;
+    if (high > 13) break;
+    const ordered = tryAssignRunInterval(low, high, tiles, indicator);
+    if (!ordered) continue;
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      const t = ordered[i];
+      if (t.kind === 'fake-joker') sum += 30;
+      else sum += low + i;
+    }
+    return sum;
+  }
+  return 0;
+}
+
+/**
+ * Per-meld puan: gerçek okey, seride/grupta temsil ettiği sayı ile sayılır (13 yerine duruyorsa 13).
+ * Geçersiz seçimde (önizleme) fiziksel yüz toplamına düşülür.
+ */
+export function meldPoints(tiles: Tile[], indicator: IndicatorInfo, meldType?: 'group' | 'run'): number {
+  if (meldType === 'group' && validateGroup(tiles, indicator)) return meldPointsGroup(tiles, indicator);
+  if (meldType === 'run' && validateRun(tiles, indicator)) return meldPointsRun(tiles, indicator);
+  const dt = detectMeldType(tiles, indicator);
+  if (dt === 'group') return meldPointsGroup(tiles, indicator);
+  if (dt === 'run') return meldPointsRun(tiles, indicator);
+  return meldPointsLegacyPhysical(tiles, indicator);
+}
+
 // Total points across all melds (for 101-point opening check)
-export function totalMeldPoints(melds: Array<{ tiles: Tile[] }>, indicator: IndicatorInfo): number {
-  return melds.reduce((sum, m) => sum + meldPoints(m.tiles, indicator), 0);
+export function totalMeldPoints(
+  melds: Array<{ tiles: Tile[]; type?: 'group' | 'run' }>,
+  indicator: IndicatorInfo,
+): number {
+  return melds.reduce((sum, m) => sum + meldPoints(m.tiles, indicator, m.type), 0);
 }
 
 export function validateMeld(meld: Omit<Meld, 'id' | 'ownerId'>, indicator: IndicatorInfo): boolean {

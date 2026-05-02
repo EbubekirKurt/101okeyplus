@@ -1,13 +1,19 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import { detectMeldType, totalMeldPoints } from '../../lib/melds/validateMeld';
 import { effectiveMinOpenPoints, effectiveMinOpenPairCount, getLeftOpponentUid } from '../../lib/engine/gameEngine';
 import { peekNextDrawFromPile } from '../../lib/engine/deal';
 import {
-  detectLiveMelds, liveMeldsToOpeningMelds, seriDiz, ciftDiz, seriDizWithGaps, ciftDizWithGaps, tilesToGrid, gridToTiles,
+  seriDiz,
+  ciftDiz,
+  seriDizWithGaps,
+  ciftDizWithGaps,
+  tilesToGrid,
+  gridToTiles,
 } from '../../lib/auto-arrange';
+import { normalizeRackGrid, scoreVisualRack, RACK_COLS } from '../../lib/rack/visualRackScore';
 import { GameState, IndicatorInfo } from '../../types/game';
 import { Meld } from '../../types/meld';
 import { Tile } from '../../types/tile';
@@ -45,24 +51,22 @@ function SidePlayer({ uid, game, side }: { uid: string | undefined; game: GameSt
 
   return (
     <div style={{
-      width: 100, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+      width: 100, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
       padding: '4px 2px', minHeight: 0,
     }}>
-      {/* Rack — sabit min yükseklik; flex:1 sıkışınca ıstaka kayboluyordu */}
-      <div style={{
-        minHeight: 138, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, width: '100%',
-      }}>
+      {/* Rotated rack — same HorizontalRack as top player */}
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <OpponentRack tileCount={p.handCount ?? 0} position={side} />
       </div>
 
       {/* Avatar */}
       <div style={{ position: 'relative' }}>
         <div style={{
-          width: 40, height: 40, borderRadius: '50%',
+          width: 36, height: 36, borderRadius: '50%',
           border: `2px solid ${isActive ? '#facc15' : '#4b5563'}`,
           background: 'linear-gradient(135deg, #374151, #1f2937)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: 'white', fontWeight: 900, fontSize: 18,
+          color: 'white', fontWeight: 900, fontSize: 16,
           boxShadow: isActive ? '0 0 10px rgba(250,204,21,0.5)' : undefined,
         }}>
           {p.displayName.charAt(0).toUpperCase()}
@@ -73,10 +77,13 @@ function SidePlayer({ uid, game, side }: { uid: string | undefined; game: GameSt
       </div>
 
       {/* Name badge */}
-      <div style={{ background: 'rgba(0,0,0,0.65)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: '2px 6px', textAlign: 'center', width: '100%' }}>
-        <p style={{ color: 'white', fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.displayName}</p>
-        <p style={{ color: '#9ca3af', fontSize: 12 }}>{p.totalScore}p</p>
-        {p.hasOpened && <p style={{ color: '#4ade80', fontSize: 11 }}>✓ Açtı</p>}
+      <div style={{
+        background: 'rgba(0,0,0,0.65)',
+        border: `1px solid ${isActive ? 'rgba(250,204,21,0.4)' : 'rgba(255,255,255,0.1)'}`,
+        borderRadius: 8, padding: '3px 6px', textAlign: 'center', width: '100%',
+      }}>
+        <p style={{ color: 'white', fontSize: 12, fontWeight: 700, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.displayName}</p>
+        <p style={{ color: '#9ca3af', fontSize: 11, margin: 0 }}>{p.totalScore}p{p.hasOpened ? ' ✓' : ''}</p>
       </div>
     </div>
   );
@@ -210,9 +217,12 @@ export function GameTable({
   const [tilesOrder, setTilesOrder] = useState<Tile[]>(hand);
   const [timeLeft, setTimeLeft] = useState(90);
   const [gridOverride, setGridOverride] = useState<(Tile | null)[][] | null>(null);
+  /** PlayerHand’ten gelen gerçek 2×15 grid (boşluklar dahil); el değişince sıfırlanır. */
+  const [visualRackGrid, setVisualRackGrid] = useState<(Tile | null)[][] | null>(null);
   const drawPileBtnRef = useRef<HTMLButtonElement>(null);
   const rackBandRef = useRef<HTMLDivElement>(null);
   const [drawPileBusy, setDrawPileBusy] = useState(false);
+  const [dizDropdownOpen, setDizDropdownOpen] = useState(false);
   const [drawFlight, setDrawFlight] = useState<null | {
     tile: Tile;
     fromX: number;
@@ -252,6 +262,15 @@ export function GameTable({
       return next;
     });
   }, [hand]);
+
+  const handIdSig = useMemo(() => [...hand].map(t => t.id).sort().join(','), [hand]);
+  useEffect(() => {
+    setVisualRackGrid(null);
+  }, [handIdSig]);
+
+  const handleRackGridSync = useCallback((g: (Tile | null)[][]) => {
+    setVisualRackGrid(normalizeRackGrid(g));
+  }, []);
 
   useEffect(() => {
     if (!game.turnDeadline) return;
@@ -306,39 +325,50 @@ export function GameTable({
   const indicatorStableKey = game.indicator
     ? `${game.indicator.okeyColor}-${game.indicator.okeyNumber}-${game.indicator.indicatorTile.id}`
     : '';
-  const liveMelds = useMemo(() => {
-    if (!indicatorStableKey) return null;
-    const ind = game.indicator;
-    if (!ind) return null;
-    return detectLiveMelds(tilesOrder, ind);
-  }, [tilesOrder, indicatorStableKey]);
-  const livePoints = liveMelds?.totalPoints ?? 0;
-  const meldGroupByTileId = useMemo(() => {
-    const m = new Map<string, number>();
-    if (!liveMelds) return m;
-    liveMelds.melds.forEach((meld, gi) => {
-      meld.indices.forEach(idx => {
-        if (tilesOrder[idx]) m.set(tilesOrder[idx].id, gi);
-      });
-    });
-    return m;
-  }, [liveMelds, tilesOrder]);
 
-  /** EL AÇ (ilk) veya açtıktan sonra yeni per ekle — ıstaka sırasına göre canlı tespit. */
+  /** Istakada görünen boşluklar dahil grid; sync gelene kadar dolu sıra (satır satır paket). */
+  const effectiveRackGrid = useMemo(
+    () => visualRackGrid ?? tilesToGrid([...tilesOrder], RACK_COLS),
+    [visualRackGrid, tilesOrder],
+  );
+
+  /** Seriler / vurgular: yalnızca ıstakada bitişik (boşluksuz) dizili geçerli perler. */
+  const rackStats = useMemo(() => {
+    const ind = game.indicator;
+    if (!ind || !indicatorStableKey) return null;
+    return scoreVisualRack(effectiveRackGrid, ind);
+  }, [effectiveRackGrid, game.indicator, indicatorStableKey]);
+
+  const livePoints = rackStats?.seriesPoints ?? 0;
+  const livePairCount = rackStats?.pairSegmentCount ?? 0;
+
+  const meldGroupByTileId = useMemo(
+    () => rackStats?.meldGroupByTileId ?? new Map<string, number>(),
+    [rackStats],
+  );
+
+  /** EL AÇ (ilk) veya açtıktan sonra yeni per ekle — ekrandaki bitişik per blokları. */
   async function handleOpenSelected() {
     const ind = game.indicator;
     if (!ind) return;
 
-    if (!liveMelds || liveMelds.melds.length === 0) {
+    const mf = rackStats?.meldsForOpen ?? [];
+    if (mf.length === 0) {
       toast.error(
         myPlayer?.hasOpened
           ? 'Istakada yeni per tespit edilmedi. SERİ DİZ ile grupla veya per oluştur.'
-          : `Istakada tespit edilen per yok. SERİ DİZ / ÇİFT DİZ ile grupla; açmak için toplam min ${minOpenPts} puan gerekir.`,
+          : `Istakada bitişik per yok. SERİ DİZ ile düzenle veya açmak için toplam min ${minOpenPts} puanı ıstakada grupla.`,
       );
       return;
     }
 
-    const melds = liveMeldsToOpeningMelds(tilesOrder, liveMelds, myUid);
+    const ts = Date.now();
+    const melds: Meld[] = mf.map((m, i) => ({
+      id: `${myUid}-open-${ts}-${i}`,
+      type: m.type,
+      tiles: m.tiles,
+      ownerId: myUid,
+    }));
 
     if (myPlayer?.hasOpened) {
       const ok = await Promise.resolve(onLayAdditionalMelds(melds));
@@ -347,7 +377,7 @@ export function GameTable({
     }
 
     if (livePoints < minOpenPts) {
-      toast.error(`Açmak için tespit edilen perlerin toplam puanı en az ${minOpenPts} olmalı (şu an: ${livePoints}).`);
+      toast.error(`Açmak için ıstakadaki bitişik perlerin toplamı en az ${minOpenPts} olmalı (şu an: ${livePoints}). SERİ DİZ deneyebilirsin.`);
       return;
     }
 
@@ -355,8 +385,10 @@ export function GameTable({
     if (ok !== false) clearSelection();
   }
 
-  const canLayNewMelds = Boolean(myPlayer?.hasOpened && liveMelds && liveMelds.melds.length > 0);
-  const canFirstOpenSeri = Boolean(!myPlayer?.hasOpened && liveMelds && liveMelds.melds.length > 0 && livePoints >= minOpenPts);
+  const canLayNewMelds = Boolean(myPlayer?.hasOpened && rackStats && rackStats.meldsForOpen.length > 0);
+  const canFirstOpenSeri = Boolean(
+    !myPlayer?.hasOpened && rackStats && rackStats.meldsForOpen.length > 0 && livePoints >= minOpenPts,
+  );
   const seriButtonActive = Boolean(canDiscard && (canFirstOpenSeri || canLayNewMelds));
 
   async function handleFivePairs() {
@@ -370,9 +402,15 @@ export function GameTable({
   }
 
   async function handleDrawPilePress() {
-    if (!canDraw || drawPileBusy) return;
+    console.log('[GT drawPile] press', { canDraw, drawPileBusy, phase: game.phase, isMyTurn, drawPileCount: game.drawPileCount });
+    if (!canDraw) return;
+    if (drawPileBusy) {
+      resetDrawState();
+      return;
+    }
     const next = peekNextDrawFromPile(game);
     if (!next) {
+      console.warn('[GT drawPile] peekNextDrawFromPile returned null', { drawPileCount: game.drawPileCount, seed: game.seed, turnOrder: game.turnOrder });
       toast.error('Bankada taş yok');
       return;
     }
@@ -397,20 +435,24 @@ export function GameTable({
       await onDrawFromPile();
     } catch {
       toast.error('Bankadan çekilemedi');
-      setDrawFlight(null);
-      setSuppressHandTileIds(new Set());
-      setDrawPileBusy(false);
+      resetDrawState();
       return;
     }
-    if (!pileEl || !rackEl) {
-      setDrawPileBusy(false);
-    }
+    setTimeout(resetDrawState, 800);
   }
 
-  function onDrawFlightComplete() {
+  function resetDrawState() {
+    setDrawPileBusy(false);
     setDrawFlight(null);
     setSuppressHandTileIds(new Set());
-    setDrawPileBusy(false);
+  }
+
+  useEffect(() => {
+    resetDrawState();
+  }, [game.currentTurnUid, game.phase]);
+
+  function onDrawFlightComplete() {
+    resetDrawState();
   }
 
   return (
@@ -443,282 +485,184 @@ export function GameTable({
       </div>
 
       {/* ── MAIN GAME AREA ──────────────────────────────────────────────── */}
-      <div style={{ flex: 1, display: 'flex', gap: 6, padding: '6px 8px', minHeight: 0, overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 8px', minHeight: 0, overflow: 'hidden' }}>
 
-        {/* Left player */}
-        <SidePlayer uid={leftUid} game={game} side="left" />
+        {/* Top player */}
+        <TopPlayer uid={topUid} game={game} />
 
-        {/* Center section */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0, minHeight: 0 }}>
+        {/* Middle row: left side | green table | right side */}
+        <div style={{ flex: 1, display: 'flex', gap: 6, minHeight: 0 }}>
 
-          {/* Top player */}
-          <TopPlayer uid={topUid} game={game} />
+          {/* Left side player */}
+          <SidePlayer uid={leftUid} game={game} side="left" />
 
-          {/* Table + right controls */}
-          <div style={{ flex: 1, display: 'flex', gap: 6, minHeight: 0 }}>
-
-            {/* ── GREEN TABLE ──────────────────────────────────────── */}
+          {/* ── GREEN TABLE ──────────────────────────────────────── */}
+          <div style={{
+            flex: 1, borderRadius: 12, overflow: 'hidden', position: 'relative',
+            background: '#267040',
+            boxShadow: 'inset 0 0 30px rgba(0,0,0,0.35), 0 0 0 2px #1a5030',
+          }}>
+            {/* Sağ üst köşe: Seriler/Çiftler + Gösterge/Havuz */}
             <div style={{
-              flex: 1, borderRadius: 12, overflow: 'hidden', position: 'relative',
-              background: '#267040',
-              boxShadow: 'inset 0 0 30px rgba(0,0,0,0.35), 0 0 0 2px #1a5030',
+              position: 'absolute', top: 10, right: 10, zIndex: 20,
+              display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end',
             }}>
-              {/* Son atılan taş — dört köşe (sağ altta sen) */}
-              {topUid && (
-                <CornerLastDiscard
-                  game={game} uid={topUid} indicator={game.indicator} corner="tr"
-                  canPick={false}
-                  onPick={() => {}}
-                  cornerLabel="Üst"
-                />
-              )}
-              {rightUid && (
-                <CornerLastDiscard
-                  game={game} uid={rightUid} indicator={game.indicator} corner="bl"
-                  canPick={false}
-                  onPick={() => {}}
-                  cornerLabel="Sağ"
-                />
-              )}
-              {/* Melds on table */}
-              {game.melds.length > 0 && (
-                <div style={{
-                  position: 'absolute',
-                  left: 4,
-                  right: 4,
-                  top: 6,
-                  bottom: 8,
-                  zIndex: 12,
-                  overflow: 'visible',
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  alignContent: 'flex-start',
-                  paddingTop: 2,
-                  paddingBottom: 2,
-                  pointerEvents: 'auto',
-                }}>
-                  <MeldArea
-                    melds={game.melds}
-                    indicator={game.indicator}
-                    myUid={myUid}
-                    players={game.players}
-                    canExtend={canDiscard && myPlayer?.hasOpened}
-                    onExtendMeld={meldId => {
-                      if (!selectedTileIds.size) { toast.error('Taş seç'); return; }
-                      onExtendMeld(meldId, [...selectedTileIds]);
-                      clearSelection();
-                    }}
-                  />
-                </div>
-              )}
-
-              {/* Turn indicator — perlerin altında kalsın diye düşük z-index */}
-              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 4 }}>
-                <AnimatePresence mode="wait">
-                  <motion.div key={game.currentTurnUid}
-                    initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
-                    <div style={{
-                      padding: '4px 14px', borderRadius: 20,
-                      background: isMyTurn ? 'rgba(250,204,21,0.9)' : 'rgba(0,0,0,0.6)',
-                      color: isMyTurn ? '#000' : 'rgba(255,255,255,0.6)',
-                      fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap',
+              {/* Gösterge + Havuz yan yana */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                {game.indicator && (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+                    <p style={{ color: 'rgba(250,204,21,0.75)', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, margin: 0 }}>Gösterge</p>
+                    <TileComponent tile={game.indicator.indicatorTile} size="md" />
+                  </div>
+                )}
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+                  <p style={{ color: 'rgba(156,163,175,0.75)', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, margin: 0 }}>Havuz</p>
+                  <motion.button
+                    ref={drawPileBtnRef}
+                    disabled={!canDraw || drawPileBusy}
+                    onClick={() => void handleDrawPilePress()}
+                    whileHover={canDraw && !drawPileBusy ? { y: -3 } : {}}
+                    whileTap={canDraw && !drawPileBusy ? { scale: 0.95 } : {}}
+                    style={{
+                      width: 52, height: 70, borderRadius: 8, position: 'relative',
+                      background: 'linear-gradient(160deg, #f0f0f0, #e8e8e8)',
+                      border: `2px solid ${canDraw && !drawPileBusy ? '#facc15' : '#aaa'}`,
+                      boxShadow: canDraw && !drawPileBusy ? '0 0 14px rgba(250,204,21,0.5), 0 3px 8px rgba(0,0,0,0.3)' : '0 3px 8px rgba(0,0,0,0.3)',
+                      cursor: canDraw && !drawPileBusy ? 'pointer' : 'not-allowed',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column',
+                      opacity: drawPileBusy ? 0.75 : 1,
                     }}>
-                      {isMyTurn ? '🎯 Senin sıran!' : `⏳ ${game.players[game.currentTurnUid]?.displayName ?? '?'}`}
-                    </div>
-                  </motion.div>
-                </AnimatePresence>
+                    <span style={{ fontWeight: 900, color: '#374151', fontSize: 17 }}>{game.drawPileCount}</span>
+                    <span style={{ fontSize: 11, color: '#6b7280' }}>kart</span>
+                    {canDraw && !drawPileBusy && (
+                      <motion.div style={{ position: 'absolute', inset: -2, borderRadius: 9, border: '2px solid rgba(250,204,21,0.6)' }}
+                        animate={{ opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1 }} />
+                    )}
+                  </motion.button>
+                </div>
               </div>
             </div>
 
-            {/* ── RIGHT CONTROLS ────────────────────────────────── */}
-            <div style={{ width: 96, display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+            {/* Son atılan taş köşeleri */}
+            {topUid && (
+              <CornerLastDiscard
+                game={game} uid={topUid} indicator={game.indicator} corner="tl"
+                canPick={false} onPick={() => {}} cornerLabel="Üst"
+              />
+            )}
+            {rightUid && (
+              <CornerLastDiscard
+                game={game} uid={rightUid} indicator={game.indicator} corner="bl"
+                canPick={false} onPick={() => {}} cornerLabel="Sağ"
+              />
+            )}
 
-              {/* Indicator */}
-              {game.indicator && (
-                <div style={{ textAlign: 'center' }}>
-                  <p style={{ color: 'rgba(250,204,21,0.6)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 3 }}>Gösterge</p>
-                  <TileComponent tile={game.indicator.indicatorTile} size="md" />
-                </div>
-              )}
+            {/* Melds on table */}
+            {game.melds.length > 0 && (
+              <div style={{
+                position: 'absolute', left: 4, right: 4, top: 6, bottom: 8, zIndex: 12,
+                overflow: 'visible', display: 'flex', alignItems: 'flex-start',
+                alignContent: 'flex-start', paddingTop: 2, paddingBottom: 2, pointerEvents: 'none',
+              }}>
+                <MeldArea
+                  melds={game.melds}
+                  indicator={game.indicator}
+                  myUid={myUid}
+                  players={game.players}
+                  canExtend={canDiscard && myPlayer?.hasOpened}
+                  onExtendMeld={meldId => {
+                    if (!selectedTileIds.size) { toast.error('Taş seç'); return; }
+                    onExtendMeld(meldId, [...selectedTileIds]);
+                    clearSelection();
+                  }}
+                />
+              </div>
+            )}
 
-              {/* Draw pile */}
-              <div style={{ textAlign: 'center', position: 'relative' }}>
-                <motion.button
-                  ref={drawPileBtnRef}
-                  disabled={!canDraw || drawPileBusy}
-                  onClick={() => void handleDrawPilePress()}
-                  whileHover={canDraw && !drawPileBusy ? { y: -3 } : {}}
-                  whileTap={canDraw && !drawPileBusy ? { scale: 0.95 } : {}}
-                  style={{
-                    width: 52, height: 70, borderRadius: 8, position: 'relative',
-                    background: 'linear-gradient(160deg, #f0f0f0, #e8e8e8)',
-                    border: `2px solid ${canDraw && !drawPileBusy ? '#facc15' : '#aaa'}`,
-                    boxShadow: canDraw && !drawPileBusy ? '0 0 14px rgba(250,204,21,0.5), 0 3px 8px rgba(0,0,0,0.3)' : '0 3px 8px rgba(0,0,0,0.3)',
-                    cursor: canDraw && !drawPileBusy ? 'pointer' : 'not-allowed',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column',
-                    opacity: drawPileBusy ? 0.75 : 1,
+            {/* Turn indicator */}
+            <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', pointerEvents: 'none', zIndex: 4 }}>
+              <AnimatePresence mode="wait">
+                <motion.div key={game.currentTurnUid}
+                  initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0 }}>
+                  <div style={{
+                    padding: '4px 14px', borderRadius: 20,
+                    background: isMyTurn ? 'rgba(250,204,21,0.9)' : 'rgba(0,0,0,0.6)',
+                    color: isMyTurn ? '#000' : 'rgba(255,255,255,0.6)',
+                    fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap',
                   }}>
-                  <span style={{ fontWeight: 900, color: '#374151', fontSize: 17 }}>{game.drawPileCount}</span>
-                  <span style={{ fontSize: 11, color: '#6b7280' }}>kart</span>
-                  {canDraw && !drawPileBusy && (
-                    <motion.div style={{ position: 'absolute', inset: -2, borderRadius: 9, border: '2px solid rgba(250,204,21,0.6)' }}
-                      animate={{ opacity: [0.5, 1, 0.5] }} transition={{ repeat: Infinity, duration: 1 }} />
-                  )}
-                </motion.button>
-              </div>
-
-              <div style={{ width: '100%', padding: '0 2px' }}>
-                <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: 'rgba(253,224,71,0.75)', textAlign: 'center', lineHeight: 1.35 }}>
-                  Min {minOpenPts} puan
-                  <br />
-                  <span style={{ color: 'rgba(216,180,254,0.85)' }}>Çift min {minOpenPairs} ({pairTilesNeeded}t)</span>
-                </p>
-              </div>
+                    {isMyTurn ? '🎯 Senin sıran!' : `⏳ ${game.players[game.currentTurnUid]?.displayName ?? '?'}`}
+                  </div>
+                </motion.div>
+              </AnimatePresence>
             </div>
           </div>
 
+          {/* Right side player */}
+          <SidePlayer uid={rightUid} game={game} side="right" />
         </div>
-
-        {/* Right player */}
-        <SidePlayer uid={rightUid} game={game} side="right" />
       </div>
 
       {/* ── ACTION BUTTONS ROW ──────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', padding: '2px 8px 3px', flexShrink: 0 }}>
-
-        {/* Left: Çift buttons */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2px 8px 3px', flexShrink: 0, gap: 8 }}>
+        {canDiscard && selectedTileIds.size === 1 && (
+          <motion.button
+            type="button"
+            onClick={handleDiscardSelected}
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            style={{
+              padding: '8px 22px', borderRadius: 10, fontWeight: 700, fontSize: 15, color: 'white',
+              background: '#dc2626', boxShadow: '0 0 14px rgba(220,38,38,0.5)', border: 'none', cursor: 'pointer',
+            }}>
+            🗑 TAŞ AT
+          </motion.button>
+        )}
+        {canDiscard && selectedTileIds.size > 1 && previewType && (
+          <div style={{ padding: '4px 12px', borderRadius: 8, background: 'rgba(0,0,0,0.5)', color: '#fbbf24', fontSize: 13, fontWeight: 600 }}>
+            {previewPoints}p ({previewType === 'group' ? 'grup' : 'seri'})
+          </div>
+        )}
+        {canDraw && (
+          <p style={{ color: 'rgba(250,204,21,0.5)', fontSize: 13, margin: 0 }}>Bankadan çek veya soldaki son taşı al</p>
+        )}
+        {mustOpenFromLeft && canDiscard && (
+          <p style={{ color: '#fb923c', fontSize: 13, fontWeight: 700, margin: 0, textAlign: 'center', maxWidth: 400 }}>
+            Soldan taş aldın: per (≥{minOpenPts} puan) veya {minOpenPairs} çift ({pairTilesNeeded} taş), ya da «Geri Ver».
+          </p>
+        )}
+        {myPlayer?.hasOpened && canDiscard && (
           <button
             type="button"
-            onClick={() => void handleFivePairs()}
-            disabled={!canDiscard || !!myPlayer?.hasOpened || selectedTileIds.size !== pairTilesNeeded}
+            onClick={() => {
+              const tiles = tilesOrder.filter(t => selectedTileIds.has(t.id));
+              if (!tiles.length || tiles.length < 3) { toast.error('En az 3 taş seç'); return; }
+              const type = detectMeldType(tiles, game.indicator!);
+              if (!type) { toast.error('Geçerli seri/grup değil'); return; }
+              onDeclareFinish([{ id: `${myUid}-fin-${Date.now()}`, type, tiles, ownerId: myUid }]);
+              clearSelection();
+            }}
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8,
-              background: canDiscard && !myPlayer?.hasOpened && selectedTileIds.size === pairTilesNeeded ? '#6d28d9' : '#2a1a4a',
-              border: '1px solid rgba(109,40,217,0.35)', color: 'white', fontWeight: 700, fontSize: 14,
-              cursor: canDiscard && !myPlayer?.hasOpened && selectedTileIds.size === pairTilesNeeded ? 'pointer' : 'default',
-              opacity: canDiscard && !myPlayer?.hasOpened && selectedTileIds.size === pairTilesNeeded ? 1 : 0.45,
-              boxShadow: canDiscard && !myPlayer?.hasOpened && selectedTileIds.size === pairTilesNeeded ? '0 2px 8px rgba(109,40,217,0.4)' : 'none',
+              padding: '7px 16px', borderRadius: 8, fontWeight: 700, fontSize: 14, color: 'white',
+              background: 'linear-gradient(90deg, #d97706, #b45309)', boxShadow: '0 2px 10px rgba(217,119,6,0.4)',
+              border: 'none', cursor: 'pointer',
             }}>
-            <TileIcon nums={[6, 6]} colors={['#2563eb', '#2563eb']} />
-            ÇİFT AÇ
+            🏆 Bitir!
           </button>
-          <button
-            onClick={handleCiftDiz}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8,
-              background: '#1e3a5f', border: '1px solid rgba(59,130,246,0.25)', color: 'white', fontWeight: 700, fontSize: 14,
-              boxShadow: '0 2px 6px rgba(0,0,0,0.3)', cursor: 'pointer',
-            }}>
-            <TileIcon nums={[6, 6]} colors={['#2563eb', '#2563eb']} />
-            ÇİFT DİZ
-          </button>
-        </div>
-
-        {/* Center: discard / turn info */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-          {canDiscard && selectedTileIds.size === 1 && (
-            <motion.button
-              type="button"
-              onClick={handleDiscardSelected}
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              style={{
-                padding: '8px 22px', borderRadius: 10, fontWeight: 700, fontSize: 15, color: 'white',
-                background: '#dc2626', boxShadow: '0 0 14px rgba(220,38,38,0.5)',
-              }}>
-              🗑 TAŞ AT
-            </motion.button>
-          )}
-          {canDiscard && selectedTileIds.size > 1 && previewType && (
-            <div style={{ padding: '4px 12px', borderRadius: 8, background: 'rgba(0,0,0,0.5)', color: '#fbbf24', fontSize: 13, fontWeight: 600 }}>
-              {previewPoints}p ({previewType === 'group' ? 'grup' : 'seri'})
-            </div>
-          )}
-          {canDraw && (
-            <p style={{ color: 'rgba(250,204,21,0.5)', fontSize: 13 }}>Bankadan çek veya soldaki son taşı al</p>
-          )}
-          {mustOpenFromLeft && canDiscard && (
-            <p style={{ color: '#fb923c', fontSize: 13, fontWeight: 700, margin: 0, textAlign: 'center', maxWidth: 360 }}>
-              Soldan taş aldın: per (≥{minOpenPts} puan) veya {minOpenPairs} çift ({pairTilesNeeded} taş), ya da «Geri Ver».
-            </p>
-          )}
-          {myPlayer?.hasOpened && canDiscard && (
-            <button
-              onClick={() => {
-                const tiles = tilesOrder.filter(t => selectedTileIds.has(t.id));
-                if (!tiles.length || tiles.length < 3) { toast.error('En az 3 taş seç'); return; }
-                const type = detectMeldType(tiles, game.indicator!);
-                if (!type) { toast.error('Geçerli seri/grup değil'); return; }
-                onDeclareFinish([{ id: `${myUid}-fin-${Date.now()}`, type, tiles, ownerId: myUid }]);
-                clearSelection();
-              }}
-              style={{
-                padding: '7px 16px', borderRadius: 8, fontWeight: 700, fontSize: 14, color: 'white',
-                background: 'linear-gradient(90deg, #d97706, #b45309)', boxShadow: '0 2px 10px rgba(217,119,6,0.4)',
-              }}>
-              🏆 Bitir!
-            </button>
-          )}
-        </div>
-
-        {/* Right: Seri buttons + score */}
-        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'flex-end', marginRight: 2 }}>
-            <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'rgba(253,224,71,0.85)', textAlign: 'right', lineHeight: 1.3 }}>
-              Min puan: {minOpenPts}
-            </p>
-            <p style={{ margin: 0, fontSize: 12, fontWeight: 700, color: 'rgba(216,180,254,0.9)', textAlign: 'right', lineHeight: 1.3 }}>
-              Min çift: {minOpenPairs} ({pairTilesNeeded} taş)
-            </p>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <button
-              type="button"
-              onClick={() => void handleOpenSelected()}
-              disabled={!seriButtonActive}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8,
-                background: seriButtonActive ? '#15803d' : '#0f1a3a',
-                border: `1px solid ${!seriButtonActive ? 'rgba(29,78,216,0.2)' : 'rgba(34,197,94,0.45)'}`,
-                color: 'white', fontWeight: 700, fontSize: 14,
-                cursor: seriButtonActive ? 'pointer' : 'not-allowed',
-                opacity: seriButtonActive ? 1 : 0.45,
-                boxShadow: seriButtonActive ? '0 2px 10px rgba(34,197,94,0.35)' : 'none',
-              }}
-              title={myPlayer?.hasOpened ? 'Açtıktan sonra yeni per(ler)i masaya ekle' : undefined}
-            >
-              <TileIcon nums={[1, 2, 3]} colors={['#dc2626', '#dc2626', '#dc2626']} />
-              {myPlayer?.hasOpened ? 'PER EKLE' : 'SERİ AÇ'}
-            </button>
-            <button
-              onClick={handleSeriDiz}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8,
-                background: '#166534', border: '1px solid rgba(34,197,94,0.25)', color: 'white', fontWeight: 700, fontSize: 14,
-                boxShadow: '0 2px 6px rgba(0,0,0,0.3)', cursor: 'pointer',
-              }}>
-              <TileIcon nums={[1, 2, 3]} colors={['#dc2626', '#dc2626', '#dc2626']} />
-              SERİ DİZ
-            </button>
-          </div>
-
-          {/* Live score badge: tespit edilen per puan toplamı */}
-          <div style={{
-            width: 50, height: 50, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: myPlayer?.hasOpened
-              ? (canLayNewMelds ? '#16a34a' : '#1d4ed8')
-              : (livePoints >= minOpenPts ? '#16a34a' : '#1d4ed8'),
-            color: 'white', fontWeight: 900, fontSize: 19,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
-          }}>
-            {livePoints}
-          </div>
-        </div>
+        )}
+        {!canDiscard && !canDraw && (
+          <p style={{ color: 'rgba(255,255,255,0.2)', fontSize: 12, margin: 0 }}>
+            ⏳ {game.players[game.currentTurnUid]?.displayName ?? '?'} oynuyor…
+          </p>
+        )}
       </div>
 
-      {/* ── Kullanıcı bilgisi — ıstakanın tam üstü, ortada ───────────────── */}
-      <div style={{ display: 'flex', justifyContent: 'center', flexShrink: 0, width: '100%', padding: '2px 8px 0' }}>
+      {/* ── Kullanıcı bilgisi + aksiyon butonları ───────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, width: '100%', padding: '2px 8px 0' }}>
+
+        {/* Left spacer — same flex basis as right buttons to keep name centred */}
+        <div style={{ flex: 1 }} />
+
+        {/* Center: player badge */}
         <motion.div
           animate={isMyTurn ? { scale: [1, 1.02, 1] } : {}}
           transition={{ repeat: Infinity, duration: 2 }}
@@ -728,27 +672,148 @@ export function GameTable({
             background: 'rgba(0,0,0,0.65)',
             border: `1px solid ${isMyTurn ? 'rgba(250,204,21,0.5)' : 'rgba(255,255,255,0.08)'}`,
             boxShadow: isMyTurn ? '0 0 12px rgba(250,204,21,0.2)' : undefined,
+            flexShrink: 0,
           }}
         >
-          <div style={{ position: 'relative' }}>
-            <div style={{
-              width: 34, height: 34, borderRadius: '50%',
-              border: `2px solid ${isMyTurn ? '#facc15' : '#16a34a'}`,
-              background: 'linear-gradient(135deg, #374151, #1f2937)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'white', fontWeight: 900, fontSize: 15,
-              boxShadow: '0 0 0 2px rgba(22,163,74,0.4)',
-            }}>
-              {myPlayer?.displayName?.charAt(0).toUpperCase()}
-            </div>
+          <div style={{
+            width: 34, height: 34, borderRadius: '50%',
+            border: `2px solid ${isMyTurn ? '#facc15' : '#16a34a'}`,
+            background: 'linear-gradient(135deg, #374151, #1f2937)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: 'white', fontWeight: 900, fontSize: 15,
+            boxShadow: '0 0 0 2px rgba(22,163,74,0.4)',
+          }}>
+            {myPlayer?.displayName?.charAt(0).toUpperCase()}
           </div>
           <div>
-            <p style={{ color: 'white', fontSize: 14, fontWeight: 600 }}>{myPlayer?.displayName}</p>
-            <p style={{ color: '#9ca3af', fontSize: 11 }}>
-              {myPlayer?.hasOpened ? '✓ Açtı' : '— — — —'} &nbsp; Beta Version: 1.0
+            <p style={{ color: 'white', fontSize: 14, fontWeight: 600, margin: 0 }}>{myPlayer?.displayName}</p>
+            <p style={{ color: '#9ca3af', fontSize: 11, margin: 0 }}>
+              {myPlayer?.hasOpened ? '✓ Açtı' : '— — — —'}
             </p>
           </div>
         </motion.div>
+
+        {/* Right: action buttons */}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 5 }}>
+          {/* ÇİFT AÇ */}
+          <button
+            type="button"
+            onClick={() => void handleFivePairs()}
+            disabled={!canDiscard || !!myPlayer?.hasOpened || selectedTileIds.size !== pairTilesNeeded}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5, padding: '6px 10px', borderRadius: 8,
+              background: canDiscard && !myPlayer?.hasOpened && selectedTileIds.size === pairTilesNeeded ? '#6d28d9' : '#2a1a4a',
+              border: '1px solid rgba(109,40,217,0.35)', color: 'white', fontWeight: 700, fontSize: 13,
+              cursor: canDiscard && !myPlayer?.hasOpened && selectedTileIds.size === pairTilesNeeded ? 'pointer' : 'default',
+              opacity: canDiscard && !myPlayer?.hasOpened && selectedTileIds.size === pairTilesNeeded ? 1 : 0.5,
+            }}>
+            <TileIcon nums={[6, 6]} colors={['#2563eb', '#2563eb']} />
+            ÇİFT AÇ
+          </button>
+
+          {/* SERİ AÇ / PER EKLE */}
+          <button
+            type="button"
+            onClick={() => void handleOpenSelected()}
+            disabled={!seriButtonActive}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5, padding: '6px 10px', borderRadius: 8,
+              background: seriButtonActive ? '#15803d' : '#0f1a3a',
+              border: `1px solid ${seriButtonActive ? 'rgba(34,197,94,0.45)' : 'rgba(29,78,216,0.2)'}`,
+              color: 'white', fontWeight: 700, fontSize: 13,
+              cursor: seriButtonActive ? 'pointer' : 'default',
+              opacity: seriButtonActive ? 1 : 0.5,
+            }}>
+            <TileIcon nums={[1, 2, 3]} colors={['#dc2626', '#dc2626', '#dc2626']} />
+            {myPlayer?.hasOpened ? 'PER EKLE' : 'SERİ AÇ'}
+          </button>
+
+          {/* OTOMATİK DİZ dropdown */}
+          <div style={{ position: 'relative' }}>
+            <button
+              type="button"
+              onClick={() => setDizDropdownOpen(v => !v)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px', borderRadius: 8,
+                background: '#1e3a5f', border: '1px solid rgba(59,130,246,0.35)',
+                color: 'white', fontWeight: 700, fontSize: 13, cursor: 'pointer',
+              }}>
+              <TileIcon nums={[1, 2, 3]} colors={['#dc2626', '#2563eb', '#16a34a']} />
+              OTOMATİK DİZ <span style={{ fontSize: 10, marginLeft: 2 }}>{dizDropdownOpen ? '▼' : '▲'}</span>
+            </button>
+            {dizDropdownOpen && (
+              <div style={{
+                position: 'absolute', bottom: 'calc(100% + 4px)', right: 0,
+                background: '#1e2d3d', border: '1px solid rgba(59,130,246,0.35)',
+                borderRadius: 8, overflow: 'hidden', zIndex: 50,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                minWidth: 145,
+              }}>
+                <button
+                  type="button"
+                  onClick={() => { handleSeriDiz(); setDizDropdownOpen(false); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                    padding: '8px 12px', background: 'transparent',
+                    border: 'none', borderBottom: '1px solid rgba(255,255,255,0.07)',
+                    color: 'white', fontWeight: 700, fontSize: 13, cursor: 'pointer',
+                  }}>
+                  <TileIcon nums={[1, 2, 3]} colors={['#dc2626', '#dc2626', '#dc2626']} />
+                  SERİ DİZ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { handleCiftDiz(); setDizDropdownOpen(false); }}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+                    padding: '8px 12px', background: 'transparent',
+                    border: 'none', color: 'white', fontWeight: 700, fontSize: 13, cursor: 'pointer',
+                  }}>
+                  <TileIcon nums={[6, 6]} colors={['#2563eb', '#2563eb']} />
+                  ÇİFT DİZ
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Live score badge */}
+          <div style={{
+            width: 46, height: 46, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: myPlayer?.hasOpened
+              ? (canLayNewMelds ? '#16a34a' : '#1d4ed8')
+              : (livePoints >= minOpenPts ? '#16a34a' : '#1d4ed8'),
+            color: 'white', fontWeight: 900, fontSize: 18,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
+          }}>
+            {livePoints}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Seriler / Çiftler kartları — ıstakanın hemen üstü ─────────── */}
+      <div style={{ display: 'flex', gap: 8, padding: '4px 10px 2px', flexShrink: 0 }}>
+        {/* Seriler kartı */}
+        <div style={{
+          background: 'rgba(0,0,0,0.55)', border: `1px solid ${livePoints >= minOpenPts ? 'rgba(74,222,128,0.4)' : 'rgba(255,255,255,0.1)'}`,
+          borderRadius: 8, padding: '5px 12px',
+        }}>
+          <p style={{ margin: 0, color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 600 }}>Seriler</p>
+          <p style={{ margin: 0, lineHeight: 1.2 }}>
+            <span style={{ color: livePoints >= minOpenPts ? '#4ade80' : 'white', fontSize: 16, fontWeight: 900 }}>{livePoints}</span>
+            <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 12 }}> / {minOpenPts}</span>
+          </p>
+        </div>
+        {/* Çiftler kartı */}
+        <div style={{
+          background: 'rgba(0,0,0,0.55)', border: `1px solid ${livePairCount >= minOpenPairs ? 'rgba(167,139,250,0.4)' : 'rgba(255,255,255,0.1)'}`,
+          borderRadius: 8, padding: '5px 12px',
+        }}>
+          <p style={{ margin: 0, color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: 600 }}>Çiftler</p>
+          <p style={{ margin: 0, lineHeight: 1.2 }}>
+            <span style={{ color: livePairCount >= minOpenPairs ? '#a78bfa' : 'white', fontSize: 16, fontWeight: 900 }}>{livePairCount}</span>
+            <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: 12 }}> / {minOpenPairs}</span>
+          </p>
+        </div>
       </div>
 
       {/* ── WOODEN TILE RACK ────────────────────────────────────────────── */}
@@ -770,6 +835,7 @@ export function GameTable({
           onReorder={setTilesOrder}
           meldGroupByTileId={meldGroupByTileId}
           gridOverride={gridOverride}
+          onRackGridSync={handleRackGridSync}
           hiddenTileIds={suppressHandTileIds}
           canDiscard={canDiscard}
           lastOwnDiscard={lastOwnDiscard}

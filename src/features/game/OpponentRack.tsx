@@ -6,7 +6,6 @@ interface OpponentRackProps {
 }
 
 const RACK_RAIL = 'linear-gradient(180deg, #c49a6c, #8b5e30)';
-const RACK_SHELF = 'linear-gradient(90deg, #5d3a18 0%, #8b5e30 35%, #b07840 70%, #8b5e30 100%)';
 
 function FaceDownMiniTile({ size }: { size: 'xs' | 'sm' }) {
   const w = size === 'xs' ? 26 : 34;
@@ -23,24 +22,7 @@ function FaceDownMiniTile({ size }: { size: 'xs' | 'sm' }) {
   );
 }
 
-/** Kapalı taş — yan perspektif: iki sütun, yükseklik taş sayısına göre sıkışır */
-function FaceDownSideStackTile({ w, h }: { w: number; h: number }) {
-  return (
-    <div
-      style={{
-        width: w,
-        height: h,
-        borderRadius: 2,
-        flexShrink: 0,
-        background: 'linear-gradient(160deg, #8a6e4a 0%, #5c4228 45%, #3d2a18 100%)',
-        border: '1px solid #4a3520',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07), 0 1px 2px rgba(0,0,0,0.45)',
-      }}
-    />
-  );
-}
-
-function TopRack({ tileCount }: { tileCount: number }) {
+function HorizontalRack({ tileCount, size }: { tileCount: number; size: 'xs' | 'sm' }) {
   const count = Math.min(tileCount, 22);
   const half = Math.ceil(count / 2);
   const row1 = half;
@@ -48,16 +30,13 @@ function TopRack({ tileCount }: { tileCount: number }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
-      <div style={{
-        display: 'flex', flexDirection: 'column', gap: 2,
-        padding: '4px 6px 0',
-      }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 6px 0' }}>
         <div style={{ display: 'flex', gap: 2, justifyContent: 'center' }}>
-          {[...Array(row1)].map((_, i) => <FaceDownMiniTile key={`t1-${i}`} size="sm" />)}
+          {[...Array(row1)].map((_, i) => <FaceDownMiniTile key={`t1-${i}`} size={size} />)}
         </div>
         {row2 > 0 && (
           <div style={{ display: 'flex', gap: 2, justifyContent: 'center' }}>
-            {[...Array(row2)].map((_, i) => <FaceDownMiniTile key={`t2-${i}`} size="sm" />)}
+            {[...Array(row2)].map((_, i) => <FaceDownMiniTile key={`t2-${i}`} size={size} />)}
           </div>
         )}
       </div>
@@ -70,97 +49,35 @@ function TopRack({ tileCount }: { tileCount: number }) {
   );
 }
 
-const SIDE_RACK_MAX_H = 132;
-const SIDE_GAP = 2;
+// Dimensions of HorizontalRack with size="xs" for up to 22 tiles
+// row1 = 11 tiles: 11*26 + 10*2 + 12(padding) = 318px wide
+// height: 4 + 38 + 2 + 38 + 8 = 90px tall
+const SIDE_RACK_W = 322;
+const SIDE_RACK_H = 92;
 
-function SideRack({ tileCount, side }: { tileCount: number; side: 'left' | 'right' }) {
-  const count = Math.min(Math.max(tileCount, 0), 22);
-  const half = Math.ceil(count / 2);
-  const col1 = half;
-  const col2 = count - half;
-  const maxCol = Math.max(col1, col2, 1);
-  const tileH = Math.min(24, Math.max(10, Math.floor((SIDE_RACK_MAX_H - 16 - (maxCol - 1) * SIDE_GAP) / maxCol)));
-  const tileW = Math.max(14, Math.round(tileH * 0.72));
+export function OpponentRack({ tileCount, position }: OpponentRackProps) {
+  if (position === 'top') return <HorizontalRack tileCount={tileCount} size="sm" />;
 
-  const col = (n: number, key: string) => (
-    <div
-      key={key}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: SIDE_GAP,
-        justifyContent: 'flex-end',
-        alignItems: 'center',
-      }}
-    >
-      {[...Array(n)].map((_, i) => (
-        <FaceDownSideStackTile key={`${key}-${i}`} w={tileW} h={tileH} />
-      ))}
-    </div>
-  );
+  // For side players: render the same HorizontalRack rotated 90°.
+  // Outer container visual dimensions after rotation: H wide, W tall (dimensions swapped).
+  const outerW = SIDE_RACK_H;  // 92px
+  const outerH = SIDE_RACK_W;  // 322px
 
-  const tilesBlock = (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'row',
-        gap: 5,
-        alignItems: 'flex-end',
-        padding: '6px 5px 5px',
-        minHeight: SIDE_RACK_MAX_H - 10,
-      }}
-    >
-      {col(col1, 'c1')}
-      {col2 > 0 ? col(col2, 'c2') : <div style={{ width: tileW }} />}
-    </div>
-  );
-
-  const shelf = (
-    <div
-      style={{
-        height: 8,
-        marginTop: -1,
-        borderRadius: side === 'left' ? '0 0 0 6px' : '0 0 6px 0',
-        background: RACK_SHELF,
-        boxShadow: '0 2px 5px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.12)',
-      }}
-    />
-  );
-
-  const rail = (
-    <div
-      style={{
-        width: 11,
-        alignSelf: 'stretch',
-        minHeight: SIDE_RACK_MAX_H,
-        borderRadius: side === 'left' ? '6px 0 0 6px' : '0 6px 6px 0',
-        background: RACK_RAIL,
-        boxShadow: side === 'left'
-          ? '-3px 0 6px rgba(0,0,0,0.35), inset -2px 0 4px rgba(0,0,0,0.25)'
-          : '3px 0 6px rgba(0,0,0,0.35), inset 2px 0 4px rgba(0,0,0,0.25)',
-      }}
-    />
-  );
+  // Place the WxH rack absolutely, centered in the HxW container, then rotate it.
+  const innerLeft = (outerW - SIDE_RACK_W) / 2;  // (92 - 322) / 2 = -115
+  const innerTop  = (outerH - SIDE_RACK_H) / 2;  // (322 - 92)  / 2 =  115
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: side === 'left' ? 'row' : 'row-reverse',
-        alignItems: 'stretch',
-        maxWidth: '100%',
-      }}
-    >
-      {rail}
-      <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
-        {tilesBlock}
-        {shelf}
+    <div style={{ width: outerW, height: outerH, position: 'relative', flexShrink: 0 }}>
+      <div style={{
+        position: 'absolute',
+        left: innerLeft,
+        top: innerTop,
+        transformOrigin: `${SIDE_RACK_W / 2}px ${SIDE_RACK_H / 2}px`,
+        transform: `rotate(${position === 'left' ? '-90deg' : '90deg'})`,
+      }}>
+        <HorizontalRack tileCount={tileCount} size="xs" />
       </div>
     </div>
   );
-}
-
-export function OpponentRack({ tileCount, position }: OpponentRackProps) {
-  if (position === 'top') return <TopRack tileCount={tileCount} />;
-  return <SideRack tileCount={tileCount} side={position} />;
 }

@@ -371,6 +371,8 @@ interface PlayerHandProps {
   onReorder: (tiles: Tile[]) => void;
   meldGroupByTileId?: Map<string, number>;
   gridOverride?: (Tile | null)[][] | null;
+  /** Her grid güncellemesinde (boşluklar dahil) üst bileşene iletilir — Seriler/Çiftler ıstaka düzenine göre hesaplanır. */
+  onRackGridSync?: (grid: (Tile | null)[][]) => void;
   /** Hide these tile ids in the rack (e.g. while bank-draw flight overlay is showing). */
   hiddenTileIds?: Set<string>;
   canDiscard?: boolean;
@@ -396,6 +398,7 @@ export function PlayerHand({
   onReorder,
   meldGroupByTileId,
   gridOverride,
+  onRackGridSync,
   hiddenTileIds,
   canDiscard,
   lastOwnDiscard,
@@ -469,6 +472,10 @@ export function PlayerHand({
     prevOrderedIdsRef.current = flat.map(t => t.id).join(',');
     queueMicrotask(() => { setGrid(padded); });
   }, [gridOverride]);
+
+  useEffect(() => {
+    onRackGridSync?.(grid);
+  }, [grid, onRackGridSync]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 

@@ -105,7 +105,11 @@ export function GamePage() {
   }
 
   async function handleDrawFromPile() {
-    if (!game || !user || !isMyTurn || game.phase !== 'awaiting_draw') return;
+    console.log('[drawPile] attempt', { phase: game?.phase, isMyTurn, uid: user?.uid, turn: game?.currentTurnUid, drawPileCount: game?.drawPileCount });
+    if (!game || !user || !isMyTurn || game.phase !== 'awaiting_draw') {
+      console.warn('[drawPile] blocked', { game: !!game, user: !!user, isMyTurn, phase: game?.phase });
+      return;
+    }
     if (game.drawPileCount <= 0) {
       await updateGame(game.id, { phase: 'round_end', drawPileEmpty: true, lastMoveAt: Date.now() });
       return;
@@ -490,7 +494,7 @@ export function GamePage() {
         <button
           type="button"
           onClick={() => navigate('/')}
-          className="shrink-0 rounded-lg border border-amber-900/40 bg-amber-950/30 px-4 py-2.5 text-base font-semibold text-amber-100 hover:bg-amber-900/40 hover:text-white transition-colors"
+          className="shrink-0 rounded-lg border border-amber-900/40 bg-amber-950/30 px-4 py-2.5 text-base font-semibold text-amber-100 hover:bg-amber-900/40 hover:text-white transition-colors ml-6"
         >
           ← Çık
         </button>

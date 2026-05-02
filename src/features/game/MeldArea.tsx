@@ -93,7 +93,7 @@ export function MeldArea({ melds, indicator, myUid, players, canExtend, onExtend
   }, [sortedMelds]);
 
   return (
-    <div className="flex flex-row flex-wrap gap-x-4 gap-y-2 items-start justify-start content-start w-full">
+    <div className="flex flex-row flex-wrap gap-x-4 gap-y-2 items-start justify-start content-start w-full" style={{ pointerEvents: 'auto' }}>
       {meldColumns.map((chunk, colIdx) => (
         <div
           key={colIdx}

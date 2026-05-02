@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run dev        # Start dev server at http://localhost:5173
 npm run build      # tsc + vite build (always run to verify before finishing)
+npm run lint       # ESLint check
 npx tsc -p tsconfig.app.json --noEmit   # Type-check only (faster than full build)
 
 firebase deploy --only firestore:rules --project okey101-oyun  # Deploy Firestore rules
@@ -19,7 +20,7 @@ No test suite exists yet. TypeScript compilation is the primary correctness chec
 ## Architecture
 
 ### Stack
-React 19 + TypeScript, Vite 5, Tailwind CSS v4 (via `@tailwindcss/vite` plugin — no `tailwind.config.js`), Firebase 12 (Firestore + Anonymous Auth), @dnd-kit/sortable, Framer Motion, Zustand.
+React 19 + TypeScript, Vite 5, Tailwind CSS v4 (via `@tailwindcss/vite` plugin — no `tailwind.config.js`), Firebase 12 (Firestore + Anonymous Auth), @dnd-kit/sortable, Framer Motion, Zustand, React Router v7, react-hot-toast.
 
 ### Multiplayer Model — Host-Authoritative Client
 There are no Cloud Functions. The room host's browser is the authority:
@@ -40,6 +41,7 @@ games/{gameId}/moves/{id}      Append-only move log
 ### Game Rules (101 Okey — critical differences from regular Okey)
 - **Deal**: dealer gets 22 tiles, others get 21. 1 indicator tile left face-up. ~20 tiles remain in draw pile.
 - **Opening**: player must lay down melds totalling **≥ 101 points** to open (`MIN_OPEN_POINTS` constant). Alternative: 5 pairs (çift açma) using exactly 10 tiles.
+- **Opening escalation**: after a player opens with P points, next threshold becomes P+1. After N pairs, next 5-pair opening needs ≥ N+1 pairs.
 - **Okey tile**: one number above the indicator, same color (this numbered tile is the meld wildcard). Fake jokers (2 in deck) only count as that same okey face, not as arbitrary wildcards.
 - **Tile ID format**: `"R-7-0"` (color initial, number, copy 0/1), fake jokers `"FJ-0"` / `"FJ-1"`.
 - **Penalties**: threw okey = +101, can't open when game ends = +202, draw pile empties without opening = +404.
@@ -47,16 +49,18 @@ games/{gameId}/moves/{id}      Append-only move log
 
 ### Pure Game Logic (`src/lib/`)
 All game logic is pure TypeScript with no Firebase imports — testable in isolation:
-- `lib/engine/gameEngine.ts` — `createInitialGameState`, `getNextPlayer`, `canOpenMelds`, `canOpenFivePairs`, `calculateRoundPenalties`
-- `lib/engine/deal.ts` — deterministic deal using seeded RNG
-- `lib/melds/validateMeld.ts` — group/run/5-pairs validation, `totalMeldPoints`
+- `lib/engine/gameEngine.ts` — `createInitialGameState`, `getNextPlayer`, `canOpenMelds`, `canOpenFivePairs`, `calculateRoundPenalties`, `normalizeLegacyDoubledMinOpenPoints`
+- `lib/engine/deal.ts` — deterministic deal using seeded RNG; `peekNextDrawFromPile` replays shuffle to predict next card
+- `lib/melds/validateMeld.ts` — group/run/5-pairs validation, `totalMeldPoints`, `orderRunTilesForDisplay`, `orderGroupTilesForDisplay`
+- `lib/tiles/okey.ts` — `computeOkey`, `isOkey`, `tileMeldFace`, `isMeldWildcard` (fake jokers return fixed okey face, not wildcard)
 - `lib/scoring/scoreHand.ts` — tile values, `PENALTY` constants
 - `lib/rng/seeded.ts` — Mulberry32 PRNG + Fisher-Yates shuffle
 - `lib/bot/botStrategy.ts` — `getBotDiscard`: scores each tile by potential in runs/groups, never discards okey/joker
+- `lib/auto-arrange/index.ts` — `seriDiz` (color-run groups), `ciftDiz` (number groups), `seriDizWithGaps`/`ciftDizWithGaps` (insert null spacers between meld groups), `detectLiveMelds`, `tilesToGrid`/`gridToTiles`
 
 ### State Split
 - **Firestore** (`useGame`, `useHand`, `useRoom` hooks) — shared game state, opponents' tile counts, melds on table
-- **Zustand** (`src/state/store.ts`) — local UI only: `handOrder`, `selectedTileIds`. Never mirror Firestore data here.
+- **Zustand** (`src/state/store.ts`) — local UI only: `handOrder`, `selectedTileIds`, `rackGrid` (2-row grid layout), `okeyFaceHiddenIds` (toggle okey tile to blank face). Never mirror Firestore data here.
 - Hand tile *ordering* is local-only (Zustand) — not synced — to avoid write spam.
 
 ### Auth
@@ -72,6 +76,8 @@ When a player's `connected` field is `false` (set by `beforeunload`), the host d
 
 ### UI Conventions
 - CSS utility classes `.card`, `.btn-primary`, `.btn-secondary`, `.btn-ghost`, `.input`, `.spinner`, `.bg-felt` are defined in `src/index.css` — prefer these over inline Tailwind for structural components.
-- Tile sizes: `xs` (28×40) `sm` (36×52) `md` (44×62) `lg` (54×76) — controlled by the `SIZE` map in `features/tile/Tile.tsx`.
+- Tile sizes: `xs` (32×46) `sm` (42×60) `md` (52×74) `lg` (62×90) — controlled by the `SIZE` map in `features/tile/Tile.tsx`.
 - `PlayerHand` splits tiles into 2 rows (`Math.ceil(n/2)` each) for the 21-tile hand.
 - Game table background is pure CSS gradients — no image assets.
+- Framer Motion `layoutId` is used in `Tile.tsx` for crossfade; pass `suppressMicroMotion` on racks (avoids re-render jitter) and `disableSharedLayout` in multi-hand contexts.
+- The `rackGrid` in Zustand stores `(Tile | null)[][]` — nulls represent intentional gaps in the hand rack. `seriDizWithGaps`/`ciftDizWithGaps` produce these gap arrays for the auto-arrange feature.
