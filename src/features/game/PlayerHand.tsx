@@ -7,6 +7,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { IndicatorInfo } from '../../types/game';
 import { Tile } from '../../types/tile';
+import { isOkey } from '../../lib/tiles/okey';
 import { TileComponent } from '../tile/Tile';
 
 const COLS = 15;
@@ -16,7 +17,8 @@ const CELL_H = 80;
 const SLOT_W = 58;
 const OWN_DISCARD_DROP_ID = 'own-discard-drop';
 const SIDE_SLOT_W = 108;
-const MELD_COLORS = ['#22c55e', '#3b82f6', '#a855f7', '#f97316', '#06b6d4', '#ec4899'];
+/** Per ve çift vurgusu — tüm geçerli bloklar aynı yeşil. */
+const RACK_MELD_ACCENT = '#22c55e';
 
 type GridCell = Tile | null;
 type Grid = GridCell[][];
@@ -70,17 +72,24 @@ function canPlaceGroup(grid: Grid, row: number, startCol: number, count: number,
 }
 
 function mergeNewTilesIntoGrid(prev: Grid, tiles: Tile[]): Grid {
-  const newTileIds = new Set(tiles.map(t => t.id));
-  const cleaned: Grid = prev.map(row => row.map(cell =>
-    cell && newTileIds.has(cell.id) ? cell : null
-  ));
-  const existingInGrid = new Set(gridToTilesFlat(cleaned).map(t => t.id));
-  const newTiles = tiles.filter(t => !existingInGrid.has(t.id));
-  const result: Grid = cleaned.map(row => [...row]);
-  for (const tile of newTiles) {
+  const tileById = new Map(tiles.map(t => [t.id, t]));
+
+  // Grid'deki taşlardan hâlâ elde olanları koru, olmayanları sil
+  const kept = new Set<string>();
+  const result: Grid = prev.map(row => row.map(cell => {
+    if (cell && tileById.has(cell.id)) {
+      kept.add(cell.id);
+      return tileById.get(cell.id)!;
+    }
+    return null;
+  }));
+
+  // Elde olup grid'de olmayan taşları son müsait kareye koy
+  const missing = tiles.filter(t => !kept.has(t.id));
+  for (const tile of missing) {
     let placed = false;
-    for (let r = 0; r < ROWS && !placed; r++) {
-      for (let c = 0; c < COLS && !placed; c++) {
+    for (let r = ROWS - 1; r >= 0 && !placed; r--) {
+      for (let c = COLS - 1; c >= 0 && !placed; c--) {
         if (result[r][c] === null) {
           result[r][c] = tile;
           placed = true;
@@ -314,7 +323,7 @@ function DraggableTileCell({ row, col, tile, indicator, selected, onSelect, meld
     id: dragId,
     data: { row, col, tileId: tile.id },
   });
-  const color = meldGroup !== undefined ? MELD_COLORS[meldGroup % MELD_COLORS.length] : undefined;
+  const color = meldGroup !== undefined ? RACK_MELD_ACCENT : undefined;
 
   const style: React.CSSProperties = {
     transform: transform ? `translate(${transform.x}px, ${transform.y}px)` : undefined,
@@ -331,8 +340,10 @@ function DraggableTileCell({ row, col, tile, indicator, selected, onSelect, meld
         <TileComponent tile={tile} indicator={indicator} selected={selected} dragging size="md" disableSharedLayout />
         {color && (
           <div style={{
-            position: 'absolute', bottom: 0, left: 0, right: 0, height: 3,
-            background: color, borderRadius: '0 0 6px 6px', opacity: 0.85,
+            position: 'absolute', bottom: -1, left: 0, right: 0, height: 4,
+            background: color,
+            borderRadius: '0 0 6px 6px',
+            boxShadow: `0 0 12px ${color}, 0 0 6px ${color}, 0 2px 10px rgba(34,197,94,0.55)`,
           }} />
         )}
       </div>
@@ -353,8 +364,10 @@ function DraggableTileCell({ row, col, tile, indicator, selected, onSelect, meld
       />
       {color && (
         <div style={{
-          position: 'absolute', bottom: 0, left: 0, right: 0, height: 3,
-          background: color, borderRadius: '0 0 6px 6px', opacity: 0.85,
+          position: 'absolute', bottom: -1, left: 0, right: 0, height: 4,
+          background: color,
+          borderRadius: '0 0 6px 6px',
+          boxShadow: `0 0 12px ${color}, 0 0 6px ${color}, 0 2px 10px rgba(34,197,94,0.55)`,
         }} />
       )}
     </div>
@@ -642,7 +655,7 @@ export function PlayerHand({
                             col={ci}
                             tile={cell}
                             indicator={indicator}
-                            selected={selectedIds.has(cell.id)}
+                            selected={selectedIds.has(cell.id) && !(indicator && isOkey(cell, indicator))}
                             onSelect={() => onTileTap(cell.id)}
                             meldGroup={meldGroupByTileId?.get(cell.id)}
                           />

@@ -17,6 +17,7 @@ import { normalizeRackGrid, scoreVisualRack, RACK_COLS } from '../../lib/rack/vi
 import { GameState, IndicatorInfo } from '../../types/game';
 import { Meld } from '../../types/meld';
 import { Tile } from '../../types/tile';
+import { isOkey } from '../../lib/tiles/okey';
 import { useUIStore } from '../../state/store';
 import { MeldArea } from './MeldArea';
 import { OpponentRack } from './OpponentRack';
@@ -250,9 +251,14 @@ export function GameTable({
 
   useEffect(() => {
     setTilesOrder(prev => {
-      const prevIds = new Set(prev.map(t => t.id));
-      const newIds = new Set(hand.map(t => t.id));
-      const next = [...prev.filter(t => newIds.has(t.id)), ...hand.filter(t => !prevIds.has(t.id))];
+      const handIds = new Set(hand.map(t => t.id));
+      const handById = new Map(hand.map(t => [t.id, t]));
+      const kept = prev
+        .filter(t => handIds.has(t.id))
+        .map(t => handById.get(t.id)!);
+      const keptIds = new Set(kept.map(t => t.id));
+      const added = hand.filter(t => !keptIds.has(t.id));
+      const next = [...kept, ...added];
       if (
         prev.length === next.length
         && prev.every((t, i) => t.id === next[i]?.id)
@@ -261,6 +267,8 @@ export function GameTable({
       }
       return next;
     });
+    // El değiştiğinde animasyon gizlemesini temizle (yeni taş suppress'te kalmasın)
+    resetDrawState();
   }, [hand]);
 
   const handIdSig = useMemo(() => [...hand].map(t => t.id).sort().join(','), [hand]);
@@ -279,6 +287,8 @@ export function GameTable({
   }, [game.turnDeadline]);
 
   function handleRackTileTap(tileId: string) {
+    const t = tilesOrder.find(x => x.id === tileId);
+    if (t && game.indicator && isOkey(t, game.indicator)) return;
     toggleTileSelection(tileId);
   }
 
@@ -352,7 +362,15 @@ export function GameTable({
     const ind = game.indicator;
     if (!ind) return;
 
-    const mf = rackStats?.meldsForOpen ?? [];
+    let mf = rackStats?.meldsForOpen ?? [];
+    // Aynı taşın birden fazla perde girmesini engelle
+    const usedTileIds = new Set<string>();
+    mf = mf.filter(m => {
+      const ids = m.tiles.map(t => t.id);
+      if (ids.some(id => usedTileIds.has(id))) return false;
+      ids.forEach(id => usedTileIds.add(id));
+      return true;
+    });
     if (mf.length === 0) {
       toast.error(
         myPlayer?.hasOpened
@@ -402,7 +420,6 @@ export function GameTable({
   }
 
   async function handleDrawPilePress() {
-    console.log('[GT drawPile] press', { canDraw, drawPileBusy, phase: game.phase, isMyTurn, drawPileCount: game.drawPileCount });
     if (!canDraw) return;
     if (drawPileBusy) {
       resetDrawState();
@@ -410,7 +427,6 @@ export function GameTable({
     }
     const next = peekNextDrawFromPile(game);
     if (!next) {
-      console.warn('[GT drawPile] peekNextDrawFromPile returned null', { drawPileCount: game.drawPileCount, seed: game.seed, turnOrder: game.turnOrder });
       toast.error('Bankada taş yok');
       return;
     }

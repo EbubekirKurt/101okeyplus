@@ -44,30 +44,47 @@ function scoreSegment(
     pairSegmentCount: number;
     meldsForOpen: Array<{ tiles: Tile[]; type: 'run' | 'group' }>;
     meldGroupByTileId: Map<string, number>;
+    usedTileIds: Set<string>;
     groupIdx: number;
   },
 ) {
   if (seg.length >= 3) {
     const t = detectMeldType(seg, indicator);
     if (t) {
-      out.seriesPoints += meldPoints(seg, indicator, t);
-      out.meldsForOpen.push({ tiles: [...seg], type: t });
-      for (const tile of seg) out.meldGroupByTileId.set(tile.id, out.groupIdx);
-      out.groupIdx++;
+      if (!seg.some(tile => out.usedTileIds.has(tile.id))) {
+        out.seriesPoints += meldPoints(seg, indicator, t);
+        out.meldsForOpen.push({ tiles: [...seg], type: t });
+        for (const tile of seg) {
+          out.meldGroupByTileId.set(tile.id, out.groupIdx);
+          out.usedTileIds.add(tile.id);
+        }
+        out.groupIdx++;
+      }
     } else {
       const live = detectLiveMelds(seg, indicator);
       if (live.totalPoints > 0) {
-        out.seriesPoints += live.totalPoints;
         for (const m of live.melds) {
           const tiles = m.indices.map(i => seg[i]).filter((x): x is Tile => x != null);
+          if (tiles.some(tile => out.usedTileIds.has(tile.id))) continue;
+          out.seriesPoints += m.points;
           out.meldsForOpen.push({ tiles, type: m.type });
-          for (const tile of tiles) out.meldGroupByTileId.set(tile.id, out.groupIdx);
+          for (const tile of tiles) {
+            out.meldGroupByTileId.set(tile.id, out.groupIdx);
+            out.usedTileIds.add(tile.id);
+          }
           out.groupIdx++;
         }
       }
     }
   } else if (seg.length === 2 && validateNPairs(seg, indicator, 1)) {
-    out.pairSegmentCount++;
+    if (!seg.some(tile => out.usedTileIds.has(tile.id))) {
+      out.pairSegmentCount++;
+      for (const tile of seg) {
+        out.meldGroupByTileId.set(tile.id, out.groupIdx);
+        out.usedTileIds.add(tile.id);
+      }
+      out.groupIdx++;
+    }
   }
 }
 
@@ -92,6 +109,7 @@ export function scoreVisualRack(
     pairSegmentCount: 0,
     meldsForOpen: [] as Array<{ tiles: Tile[]; type: 'run' | 'group' }>,
     meldGroupByTileId: new Map<string, number>(),
+    usedTileIds: new Set<string>(),
     groupIdx: 0,
   };
 

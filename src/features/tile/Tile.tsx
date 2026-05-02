@@ -53,7 +53,10 @@ export function TileComponent({
   const showBlankOkeyFace = isNumberedOkey && okeyFaceHidden;
 
   function handleClick() {
-    if (isNumberedOkey) toggleOkeyFaceHidden(tile.id);
+    if (isNumberedOkey) {
+      toggleOkeyFaceHidden(tile.id);
+      return;
+    }
     onClick?.();
   }
 

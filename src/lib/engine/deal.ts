@@ -13,7 +13,15 @@ export interface DealResult {
 export function dealGame(playerUids: string[], seed: number): DealResult {
   const deck = shuffleWithSeed(createDeck(), seed);
 
-  // Last tile is the indicator (gösterge) - left face-up
+  // Gösterge fake joker olamaz — fake joker'i destedeki önceki taşla değiştir
+  let indicatorIdx = deck.length - 1;
+  while (indicatorIdx > 0 && deck[indicatorIdx].kind === 'fake-joker') {
+    const swap = deck[indicatorIdx];
+    deck[indicatorIdx] = deck[indicatorIdx - 1];
+    deck[indicatorIdx - 1] = swap;
+    indicatorIdx--;
+  }
+
   const indicatorTile = deck[deck.length - 1];
   const remainingDeck = deck.slice(0, deck.length - 1);
   const indicator = computeOkey(indicatorTile);
@@ -37,10 +45,7 @@ export function dealGame(playerUids: string[], seed: number): DealResult {
 export function peekNextDrawFromPile(game: { seed: number; turnOrder: string[]; drawPileCount: number }): Tile | null {
   const { drawPile } = dealGame(game.turnOrder, game.seed);
   const n = game.drawPileCount;
-  if (n <= 0 || n > drawPile.length) {
-    console.warn('[peekNextDraw] null!', { n, drawPileLen: drawPile.length, seed: game.seed, turnOrder: game.turnOrder });
-    return null;
-  }
+  if (n <= 0 || n > drawPile.length) return null;
   const i = drawPile.length - n;
   return drawPile[i] ?? null;
 }

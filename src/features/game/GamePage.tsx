@@ -105,11 +105,7 @@ export function GamePage() {
   }
 
   async function handleDrawFromPile() {
-    console.log('[drawPile] attempt', { phase: game?.phase, isMyTurn, uid: user?.uid, turn: game?.currentTurnUid, drawPileCount: game?.drawPileCount });
-    if (!game || !user || !isMyTurn || game.phase !== 'awaiting_draw') {
-      console.warn('[drawPile] blocked', { game: !!game, user: !!user, isMyTurn, phase: game?.phase });
-      return;
-    }
+    if (!game || !user || !isMyTurn || game.phase !== 'awaiting_draw') return;
     if (game.drawPileCount <= 0) {
       await updateGame(game.id, { phase: 'round_end', drawPileEmpty: true, lastMoveAt: Date.now() });
       return;
